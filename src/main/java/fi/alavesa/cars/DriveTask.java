@@ -13,7 +13,9 @@ import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.util.Vector;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -36,6 +38,7 @@ public final class DriveTask implements Runnable {
     private final CarsPlugin plugin;
     private final Map<UUID, Double> speeds = new HashMap<>();
     private final Map<UUID, Input> inputs = new HashMap<>();
+    private final Set<UUID> prepared = new HashSet<>();
     private int tick;
 
     public DriveTask(CarsPlugin plugin) {
@@ -62,6 +65,12 @@ public final class DriveTask implements Runnable {
     }
 
     private void tickCar(Pig base) {
+        if (prepared.add(base.getUniqueId())) {
+            // once per runtime: velocity needs AI on, and vanilla goals
+            // (wander, panic, follow players holding carrots) must go
+            base.setAI(true);
+            Bukkit.getMobGoals().removeAllGoals(base);
+        }
         CarType type = plugin.registry().get(
             base.getPersistentDataContainer().getOrDefault(plugin.typeKey(), PersistentDataType.STRING, ""));
         if (type == null) return;
