@@ -76,7 +76,11 @@ public final class CarsPlugin extends JavaPlugin {
         ItemDisplay body = location.getWorld().spawn(location, ItemDisplay.class, display -> {
             display.setPersistent(true);
             display.setTeleportDuration(1);
-            display.setBrightness(new org.bukkit.entity.Display.Brightness(15, 10));
+            // no brightness override: the body takes the light of wherever it
+            // is - dark in a dark corridor, bright in the sun - plus a soft
+            // ground shadow to sit it in the scene
+            display.setShadowRadius(1.15f);
+            display.setShadowStrength(0.9f);
             display.setTransformation(new Transformation(
                 new Vector3f(0, 0.5f, 0), new AxisAngle4f(0, 0, 0, 1),
                 new Vector3f((float) type.scale, (float) type.scale, (float) type.scale),
