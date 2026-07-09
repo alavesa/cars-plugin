@@ -1,0 +1,19 @@
+name: Cars
+version: '0.1.0'
+main: fi.alavesa.cars.CarsPlugin
+api-version: '1.21'
+author: Piia Alavesa
+description: Config-driven rideable vehicles - real WASD driving, custom models.
+commands:
+  car:
+    description: Create, edit and spawn vehicles
+    usage: |
+      /car create <id>
+      /car edit <id> <name|model|max-speed|acceleration|turn-rate|scale|sound> <value>
+      /car list
+      /car spawn <id>
+      /car remove        (cars within 16 blocks)
+permissions:
+  cars.admin:
+    description: Manage vehicles
+    default: op
