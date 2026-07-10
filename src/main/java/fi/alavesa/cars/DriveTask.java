@@ -44,6 +44,7 @@ public final class DriveTask implements Runnable {
     private final Map<UUID, Input> inputs = new HashMap<>();
     private final Set<UUID> prepared = new HashSet<>();
     private final Map<UUID, Vector> momentum = new HashMap<>();
+    private final Map<UUID, Float> yaws = new HashMap<>();
     private final Map<UUID, Double> lastY = new HashMap<>();
     private final Map<UUID, Float> tilt = new HashMap<>();
 
@@ -88,9 +89,10 @@ public final class DriveTask implements Runnable {
 
     private void tickCar(Pig base) {
         if (prepared.add(base.getUniqueId())) {
-            // once per runtime: velocity needs AI on, and vanilla goals
-            // (wander, panic, follow players holding carrots) must go
+            // repair pass: velocity needs AI on, decision-making goes off for
+            // good (aware=false persists), and stray goals are stripped
             base.setAI(true);
+            base.setAware(false);
             Bukkit.getMobGoals().removeAllGoals(base);
             // repair pass for older cars: drop the glow-in-the-dark brightness
             // override so the body reacts to area lighting, and add the shadow
@@ -110,7 +112,11 @@ public final class DriveTask implements Runnable {
             .filter(e -> e instanceof Player).map(e -> (Player) e)
             .findFirst().orElse(null);
         double speed = speeds.getOrDefault(base.getUniqueId(), 0.0);
-        float yaw = base.getLocation().getYaw();
+        // OUR yaw is the steering state. The entity's own yaw is never read
+        // back: vanilla rotates a ridden mob's body toward its velocity, and
+        // reading that back fed our steering into itself - the death spin.
+        float yaw = yaws.computeIfAbsent(base.getUniqueId(),
+            id -> base.getLocation().getYaw());
 
         if (driver != null) {
             Input input = inputs.get(driver.getUniqueId());
@@ -153,6 +159,7 @@ public final class DriveTask implements Runnable {
         velocity.setY(Math.min(0.1, base.getVelocity().getY())); // gravity keeps working
         base.setVelocity(velocity);
         base.setRotation(yaw, 0);
+        yaws.put(base.getUniqueId(), yaw);
 
         // nose up the stairs, nose down the slope (visual tilt on the model)
         double dy = at.getY() - lastY.getOrDefault(base.getUniqueId(), at.getY());

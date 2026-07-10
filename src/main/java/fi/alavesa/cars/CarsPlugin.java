@@ -70,8 +70,11 @@ public final class CarsPlugin extends JavaPlugin {
             pig.addScoreboardTag(DriveTask.TAG_CAR);
             pig.getPersistentDataContainer().set(typeKey, PersistentDataType.STRING, type.id);
         });
-        // AI must stay ON (NoAI freezes velocity processing entirely - the
-        // "car doesn't move" bug); the pig just has no goals left of its own.
+        // AI must stay ON (NoAI freezes velocity processing entirely), but
+        // aware=false stops all of the pig's own decision-making - and unlike
+        // runtime goal-stripping it persists across chunk reloads, so the car
+        // never reverts to wandering farm animal.
+        base.setAware(false);
         org.bukkit.Bukkit.getMobGoals().removeAllGoals(base);
         ItemDisplay body = location.getWorld().spawn(location, ItemDisplay.class, display -> {
             display.setPersistent(true);
