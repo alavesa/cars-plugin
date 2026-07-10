@@ -204,7 +204,10 @@ public final class DriveTask implements Runnable {
             base.getWorld().playSound(at, Sound.BLOCK_FIRE_EXTINGUISH, 0.5f, 1.3f);
             base.getWorld().spawnParticle(Particle.SPLASH, at, 12, 0.5, 0.2, 0.5, 0);
         }
-        positionSeats(base, type, seats, yaw);
+        ItemDisplay body = base.getPassengers().stream()
+            .filter(e -> e instanceof ItemDisplay).map(e -> (ItemDisplay) e)
+            .findFirst().orElse(null);
+        positionSeats(base, type, body, seats, yaw);
     }
 
     /** All seat stands of this car, sorted by seat index (0 = driver). */
@@ -226,24 +229,31 @@ public final class DriveTask implements Runnable {
         return DEFAULT_SEATS[Math.min(index, DEFAULT_SEATS.length - 1)];
     }
 
-    /** Seats trail the car on velocity, placed where the model says they are. */
-    private void positionSeats(Pig base, CarType type, List<ArmorStand> seats, float yaw) {
+    /** Seats are placed where the model says they are, anchored to the REAL
+     *  display position (no guessed attach heights). Rider height fine-tuning:
+     *  global seat-y-adjust in config.yml, per-type via /car edit - the
+     *  per-type value applies live, no respawn needed. */
+    private void positionSeats(Pig base, CarType type, ItemDisplay body, List<ArmorStand> seats, float yaw) {
         double radians = Math.toRadians(yaw);
         // model +Z -> forward, model +X rotated consistently with the display
         Vector axisZ = new Vector(-Math.sin(radians), 0, Math.cos(radians));
         Vector axisX = new Vector(Math.cos(radians), 0, Math.sin(radians));
         boolean fromModel = !type.seatOffsets.isEmpty();
-        double yBase = fromModel
-            ? 0.9 + type.offsetY + plugin.getConfig().getDouble("seat-y-adjust", -0.45)
-            : 0.0;
+        // where the model origin actually is in the world
+        double originY = (body != null ? body.getLocation().getY() : base.getLocation().getY() + 0.9)
+            + type.offsetY;
+        double riderOffset = plugin.getConfig().getDouble("seat-y-adjust", -0.72);
         for (ArmorStand seat : seats) {
             int index = seat.getPersistentDataContainer().getOrDefault(plugin.seatKey(), PersistentDataType.INTEGER, 0);
             double[] off = seatOffset(type, index);
             double s = fromModel ? type.scale : 1.0;
+            double seatY = fromModel
+                ? originY + off[1] * s + riderOffset + type.seatYAdjust
+                : base.getLocation().getY() + off[1] + type.seatYAdjust;
             Location target = base.getLocation().clone()
                 .add(axisX.clone().multiply(off[0] * s))
-                .add(axisZ.clone().multiply(off[2] * s))
-                .add(0, off[1] * s + yBase, 0);
+                .add(axisZ.clone().multiply(off[2] * s));
+            target.setY(seatY);
             // Armor stands ignore velocity entirely (the "seat stayed at the
             // spawn point" bug) - teleport them instead, keeping the rider
             // aboard with Paper's RETAIN_PASSENGERS flag.

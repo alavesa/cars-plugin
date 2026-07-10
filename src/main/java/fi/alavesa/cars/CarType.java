@@ -20,6 +20,7 @@ public final class CarType {
     public double offsetX;      // display model offset (blocks)
     public double offsetY;
     public double offsetZ;
+    public double seatYAdjust;  // per-type rider height tweak, live-editable
     /** Seat positions in model space, driver first - filled from the model
      *  file's "driverseat"/"seat*" elements when one exists (see CarRegistry). */
     public java.util.List<double[]> seatOffsets = java.util.List.of();
@@ -52,6 +53,7 @@ public final class CarType {
         type.offsetX = section.getDouble("offset-x", type.offsetX);
         type.offsetY = section.getDouble("offset-y", type.offsetY);
         type.offsetZ = section.getDouble("offset-z", type.offsetZ);
+        type.seatYAdjust = section.getDouble("seat-y-adjust", 0);
         return type;
     }
 
@@ -67,5 +69,6 @@ public final class CarType {
         section.set("offset-x", offsetX);
         section.set("offset-y", offsetY);
         section.set("offset-z", offsetZ);
+        section.set("seat-y-adjust", seatYAdjust);
     }
 }

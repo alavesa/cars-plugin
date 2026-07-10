@@ -1,5 +1,5 @@
 name: Cars
-version: '0.3.1'
+version: '0.3.2'
 main: fi.alavesa.cars.CarsPlugin
 api-version: '1.21'
 author: Piia Alavesa

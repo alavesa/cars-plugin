@@ -40,7 +40,7 @@ public final class CarsPlugin extends JavaPlugin {
         typeKey = new NamespacedKey(this, "type");
         carKey = new NamespacedKey(this, "car");
         seatKey = new NamespacedKey(this, "seat");
-        getConfig().addDefault("seat-y-adjust", -0.45);
+        getConfig().addDefault("seat-y-adjust", -0.72);
         getConfig().options().copyDefaults(true);
         saveConfig();
         java.io.File bundled = new java.io.File(getDataFolder(), "models/car_jeep.json");
@@ -167,8 +167,9 @@ public final class CarsPlugin extends JavaPlugin {
                         case "offset-x" -> type.offsetX = Double.parseDouble(value);
                         case "offset-y" -> type.offsetY = Double.parseDouble(value);
                         case "offset-z" -> type.offsetZ = Double.parseDouble(value);
+                        case "seat-y-adjust" -> type.seatYAdjust = Double.parseDouble(value);
                         default -> { return error(sender,
-                            "Properties: name, model, max-speed, acceleration, turn-rate, scale, sound, seats, offset-x/y/z"); }
+                            "Properties: name, model, max-speed, acceleration, turn-rate, scale, sound, seats, offset-x/y/z, seat-y-adjust"); }
                     }
                 } catch (NumberFormatException e) {
                     return error(sender, "That property takes a number.");
@@ -236,7 +237,7 @@ public final class CarsPlugin extends JavaPlugin {
             };
             case 3 -> args[0].equalsIgnoreCase("edit")
                 ? filter(Stream.of("name", "model", "max-speed", "acceleration", "turn-rate",
-                    "scale", "sound", "seats", "offset-x", "offset-y", "offset-z"), args[2])
+                    "scale", "sound", "seats", "offset-x", "offset-y", "offset-z", "seat-y-adjust"), args[2])
                 : List.of();
             default -> List.of();
         };
