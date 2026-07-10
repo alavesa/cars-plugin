@@ -40,6 +40,11 @@ public final class CarsPlugin extends JavaPlugin {
         typeKey = new NamespacedKey(this, "type");
         carKey = new NamespacedKey(this, "car");
         seatKey = new NamespacedKey(this, "seat");
+        getConfig().addDefault("seat-y-adjust", -0.45);
+        getConfig().options().copyDefaults(true);
+        saveConfig();
+        java.io.File bundled = new java.io.File(getDataFolder(), "models/car_jeep.json");
+        if (!bundled.isFile()) saveResource("models/car_jeep.json", false);
         registry = new CarRegistry(this);
         registry.load();
         task = new DriveTask(this);
@@ -85,7 +90,8 @@ public final class CarsPlugin extends JavaPlugin {
             display.setShadowRadius(1.15f);
             display.setShadowStrength(0.9f);
             display.setTransformation(new Transformation(
-                new Vector3f(0, 0.5f, 0), new AxisAngle4f(0, 0, 0, 1),
+                new Vector3f((float) type.offsetX, (float) type.offsetY, (float) type.offsetZ),
+                new AxisAngle4f(0, 0, 0, 1),
                 new Vector3f((float) type.scale, (float) type.scale, (float) type.scale),
                 new AxisAngle4f(0, 0, 0, 1)));
             display.addScoreboardTag(DriveTask.TAG_PART);
@@ -105,7 +111,8 @@ public final class CarsPlugin extends JavaPlugin {
             i.addScoreboardTag(DriveTask.TAG_PART);
         });
         base.addPassenger(hitbox);
-        for (int seat = 1; seat < type.seats; seat++) {
+        int seatCount = Math.max(type.seats, type.seatOffsets.isEmpty() ? 0 : type.seatOffsets.size());
+        for (int seat = 0; seat < seatCount; seat++) {
             int index = seat;
             location.getWorld().spawn(location.clone().add(0, 0.1, 0), ArmorStand.class, stand -> {
                 stand.setInvisible(true);
@@ -153,8 +160,11 @@ public final class CarsPlugin extends JavaPlugin {
                         case "scale" -> type.scale = Double.parseDouble(value);
                         case "sound" -> type.sound = value;
                         case "seats" -> type.seats = Math.max(1, Math.min(4, Integer.parseInt(value)));
+                        case "offset-x" -> type.offsetX = Double.parseDouble(value);
+                        case "offset-y" -> type.offsetY = Double.parseDouble(value);
+                        case "offset-z" -> type.offsetZ = Double.parseDouble(value);
                         default -> { return error(sender,
-                            "Properties: name, model, max-speed, acceleration, turn-rate, scale, sound, seats"); }
+                            "Properties: name, model, max-speed, acceleration, turn-rate, scale, sound, seats, offset-x/y/z"); }
                     }
                 } catch (NumberFormatException e) {
                     return error(sender, "That property takes a number.");
@@ -184,6 +194,12 @@ public final class CarsPlugin extends JavaPlugin {
                     NamedTextColor.AQUA));
                 return true;
             }
+            case "reload" -> {
+                registry.load();
+                sender.sendMessage(Component.text("cars.yml and seat models reloaded ("
+                    + registry.all().size() + " type(s)). Respawn cars to apply.", NamedTextColor.AQUA));
+                return true;
+            }
             case "remove" -> {
                 if (!(sender instanceof Player player)) return error(sender, "Players only.");
                 int removed = 0;
@@ -209,14 +225,14 @@ public final class CarsPlugin extends JavaPlugin {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         return switch (args.length) {
-            case 1 -> filter(Stream.of("create", "edit", "list", "spawn", "remove"), args[0]);
+            case 1 -> filter(Stream.of("create", "edit", "list", "spawn", "remove", "reload"), args[0]);
             case 2 -> switch (args[0].toLowerCase(Locale.ROOT)) {
                 case "edit", "spawn" -> filter(registry.all().keySet().stream(), args[1]);
                 default -> List.of();
             };
             case 3 -> args[0].equalsIgnoreCase("edit")
                 ? filter(Stream.of("name", "model", "max-speed", "acceleration", "turn-rate",
-                    "scale", "sound", "seats"), args[2])
+                    "scale", "sound", "seats", "offset-x", "offset-y", "offset-z"), args[2])
                 : List.of();
             default -> List.of();
         };

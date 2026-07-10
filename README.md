@@ -47,7 +47,26 @@ Jeep**. Part of the SCP facility family.
 New types spawn with model hook `car_<id>` — add a case for it in
 `assets/minecraft/items/minecart.json` and a Blockbench model under
 `assets/cars/models/vehicle/`, or point `model` at `car_jeep` to reuse the jeep.
-**Forward is +Z** in the model.
+**Forward is +Z** in the model. The model's position on the car is tuned with
+`offset-x/y/z` (display translation, in blocks — `offset-y 0.5` is the default ride
+height).
+
+## Seats straight from your Blockbench model
+
+Name elements in your model and the plugin turns them into riding positions:
+
+1. In Blockbench, name one element **`driverseat`** (that seat drives) and the
+   others **`seat`**, **`seat2`**, **`seat3`**.
+2. Export the model into the resource pack as usual — the `name` fields are ignored
+   by the client — **and drop the same .json into `plugins/Cars/models/<model>.json`**
+   (e.g. `models/car_jeep.json`).
+3. `/car reload`, respawn the car. Each named element's center becomes a seat, scaled
+   and rotated with the car; the seat count follows the model automatically.
+
+The bundled jeep ships with named seats out of the box (driver front-right, three
+passengers). If no model file exists, sensible default seat positions are used.
+If riders sit slightly too high or low for your model, tune `seat-y-adjust` in
+`config.yml` (default −0.45).
 
 ## How it works (nerd corner)
 

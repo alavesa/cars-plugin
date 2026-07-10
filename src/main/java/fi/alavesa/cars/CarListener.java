@@ -49,22 +49,17 @@ public final class CarListener implements Listener {
         event.setCancelled(true);
         Player player = event.getPlayer();
         if (player.getVehicle() != null) return;
-        boolean hasDriver = base.getPassengers().stream().anyMatch(e -> e instanceof Player);
-        if (!hasDriver) {
-            base.addPassenger(player);
-            player.sendActionBar(Component.text("You're driving. WASD; sneak to get out.", NamedTextColor.GRAY));
+        var seats = task.collectSeats(base);
+        for (ArmorStand seat : seats) {
+            if (!seat.getPassengers().isEmpty()) continue;
+            if (seat.getLocation().distanceSquared(base.getLocation()) > 25) continue;
+            seat.addPassenger(player);
+            int index = seat.getPersistentDataContainer().getOrDefault(
+                plugin.seatKey(), org.bukkit.persistence.PersistentDataType.INTEGER, 0);
+            player.sendActionBar(Component.text(index == 0
+                ? "You're driving. WASD; sneak to get out."
+                : "Passenger seat. Sneak to get out.", NamedTextColor.GRAY));
             return;
-        }
-        for (ArmorStand seat : base.getWorld().getEntitiesByClass(ArmorStand.class)) {
-            if (!seat.getScoreboardTags().contains(DriveTask.TAG_SEAT)) continue;
-            String carId = seat.getPersistentDataContainer().get(plugin.carKey(), PersistentDataType.STRING);
-            if (carId == null || !carId.equals(base.getUniqueId().toString())) continue;
-            if (seat.getPassengers().isEmpty()
-                && seat.getLocation().distanceSquared(base.getLocation()) < 25) {
-                seat.addPassenger(player);
-                player.sendActionBar(Component.text("Passenger seat. Sneak to get out.", NamedTextColor.GRAY));
-                return;
-            }
         }
         player.sendActionBar(Component.text("The car is full.", NamedTextColor.GRAY));
     }

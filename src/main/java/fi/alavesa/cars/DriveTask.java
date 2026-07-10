@@ -18,6 +18,7 @@ import org.bukkit.util.Vector;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -36,8 +37,10 @@ public final class DriveTask implements Runnable {
     public static final String TAG_PART = "cars.part";
     public static final String TAG_SEAT = "cars.seat";
 
-    /** Seat offsets (right, forward) by seat index (0 = driver rides the pig). */
-    private static final double[][] SEATS = {{-0.55, -0.1}, {0.55, -0.9}, {-0.55, -0.9}};
+    /** Fallback seat offsets [x, y, z] when the model file names none.
+     *  Index 0 is the driver. Model space axes: +Z forward, +X across. */
+    private static final double[][] DEFAULT_SEATS = {
+        {0.35, 0.35, 0.1}, {-0.35, 0.35, 0.1}, {0.35, 0.35, -0.7}, {-0.35, 0.35, -0.7}};
 
     private final CarsPlugin plugin;
     private final Map<UUID, Double> speeds = new HashMap<>();
@@ -108,9 +111,16 @@ public final class DriveTask implements Runnable {
             base.getPersistentDataContainer().getOrDefault(plugin.typeKey(), PersistentDataType.STRING, ""));
         if (type == null) return;
 
-        Player driver = base.getPassengers().stream()
+        List<ArmorStand> seats = collectSeats(base);
+        Player driver = seats.isEmpty() ? null : seats.get(0).getPassengers().stream()
             .filter(e -> e instanceof Player).map(e -> (Player) e)
             .findFirst().orElse(null);
+        if (driver == null) {
+            // legacy cars (v0.2.x): the driver used to ride the pig itself
+            driver = base.getPassengers().stream()
+                .filter(e -> e instanceof Player).map(e -> (Player) e)
+                .findFirst().orElse(null);
+        }
         double speed = speeds.getOrDefault(base.getUniqueId(), 0.0);
         // OUR yaw is the steering state. The entity's own yaw is never read
         // back: vanilla rotates a ridden mob's body toward its velocity, and
@@ -189,24 +199,46 @@ public final class DriveTask implements Runnable {
             base.getWorld().playSound(at, Sound.BLOCK_FIRE_EXTINGUISH, 0.5f, 1.3f);
             base.getWorld().spawnParticle(Particle.SPLASH, at, 12, 0.5, 0.2, 0.5, 0);
         }
-        positionSeats(base, yaw);
+        positionSeats(base, type, seats, yaw);
     }
 
-    /** Passenger seats trail the car on velocity, one tick behind at most. */
-    private void positionSeats(Pig base, float yaw) {
+    /** All seat stands of this car, sorted by seat index (0 = driver). */
+    public List<ArmorStand> collectSeats(Pig base) {
+        List<ArmorStand> seats = new java.util.ArrayList<>();
+        for (ArmorStand stand : base.getWorld().getEntitiesByClass(ArmorStand.class)) {
+            if (!stand.getScoreboardTags().contains(TAG_SEAT)) continue;
+            String carId = stand.getPersistentDataContainer().get(plugin.carKey(), PersistentDataType.STRING);
+            if (carId != null && carId.equals(base.getUniqueId().toString())) seats.add(stand);
+        }
+        seats.sort(java.util.Comparator.comparingInt(s ->
+            s.getPersistentDataContainer().getOrDefault(plugin.seatKey(), PersistentDataType.INTEGER, 0)));
+        return seats;
+    }
+
+    /** Seat position in model space [x, y, z] for a seat index. */
+    private double[] seatOffset(CarType type, int index) {
+        if (index < type.seatOffsets.size()) return type.seatOffsets.get(index);
+        return DEFAULT_SEATS[Math.min(index, DEFAULT_SEATS.length - 1)];
+    }
+
+    /** Seats trail the car on velocity, placed where the model says they are. */
+    private void positionSeats(Pig base, CarType type, List<ArmorStand> seats, float yaw) {
         double radians = Math.toRadians(yaw);
-        Vector forward = new Vector(-Math.sin(radians), 0, Math.cos(radians));
-        Vector right = new Vector(-forward.getZ(), 0, forward.getX());
-        for (ArmorStand seat : base.getWorld().getEntitiesByClass(ArmorStand.class)) {
-            if (!seat.getScoreboardTags().contains(TAG_SEAT)) continue;
-            String carId = seat.getPersistentDataContainer().get(plugin.carKey(), PersistentDataType.STRING);
-            if (carId == null || !carId.equals(base.getUniqueId().toString())) continue;
-            int index = seat.getPersistentDataContainer().getOrDefault(plugin.seatKey(), PersistentDataType.INTEGER, 1);
-            double[] offset = SEATS[Math.min(index - 1, SEATS.length - 1)];
+        // model +Z -> forward, model +X rotated consistently with the display
+        Vector axisZ = new Vector(-Math.sin(radians), 0, Math.cos(radians));
+        Vector axisX = new Vector(Math.cos(radians), 0, Math.sin(radians));
+        boolean fromModel = !type.seatOffsets.isEmpty();
+        double yBase = fromModel
+            ? 0.9 + type.offsetY + plugin.getConfig().getDouble("seat-y-adjust", -0.45)
+            : 0.0;
+        for (ArmorStand seat : seats) {
+            int index = seat.getPersistentDataContainer().getOrDefault(plugin.seatKey(), PersistentDataType.INTEGER, 0);
+            double[] off = seatOffset(type, index);
+            double s = fromModel ? type.scale : 1.0;
             Location target = base.getLocation().clone()
-                .add(right.clone().multiply(offset[0]))
-                .add(forward.clone().multiply(offset[1]))
-                .add(0, 0.1, 0);
+                .add(axisX.clone().multiply(off[0] * s))
+                .add(axisZ.clone().multiply(off[2] * s))
+                .add(0, off[1] * s + yBase, 0);
             Vector delta = target.toVector().subtract(seat.getLocation().toVector());
             if (delta.lengthSquared() > 36 && seat.getPassengers().isEmpty()) {
                 seat.teleport(target); // desynced empty seat snaps back
