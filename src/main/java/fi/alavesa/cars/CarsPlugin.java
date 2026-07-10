@@ -113,19 +113,23 @@ public final class CarsPlugin extends JavaPlugin {
         base.addPassenger(hitbox);
         int seatCount = Math.max(type.seats, type.seatOffsets.isEmpty() ? 0 : type.seatOffsets.size());
         for (int seat = 0; seat < seatCount; seat++) {
-            int index = seat;
-            location.getWorld().spawn(location.clone().add(0, 0.1, 0), ArmorStand.class, stand -> {
-                stand.setInvisible(true);
-                stand.setGravity(false);
-                stand.setPersistent(true);
-                stand.setSmall(true);
-                stand.setInvulnerable(true);
-                stand.addScoreboardTag(DriveTask.TAG_SEAT);
-                stand.getPersistentDataContainer().set(carKey, PersistentDataType.STRING,
-                    base.getUniqueId().toString());
-                stand.getPersistentDataContainer().set(seatKey, PersistentDataType.INTEGER, index);
-            });
+            spawnSeat(base, seat);
         }
+    }
+
+    /** One seat stand; also used to retrofit a driver's seat onto old cars. */
+    public void spawnSeat(Pig base, int index) {
+        base.getWorld().spawn(base.getLocation().clone().add(0, 0.1, 0), ArmorStand.class, stand -> {
+            stand.setInvisible(true);
+            stand.setGravity(false);
+            stand.setPersistent(true);
+            stand.setSmall(true);
+            stand.setInvulnerable(true);
+            stand.addScoreboardTag(DriveTask.TAG_SEAT);
+            stand.getPersistentDataContainer().set(carKey, PersistentDataType.STRING,
+                base.getUniqueId().toString());
+            stand.getPersistentDataContainer().set(seatKey, PersistentDataType.INTEGER, index);
+        });
     }
 
     // ------------------------------------------------------------- command

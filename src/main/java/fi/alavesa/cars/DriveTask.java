@@ -97,6 +97,11 @@ public final class DriveTask implements Runnable {
             base.setAI(true);
             base.setAware(false);
             Bukkit.getMobGoals().removeAllGoals(base);
+            // v0.2.x cars have no driver's seat (index 0) - retrofit one
+            boolean hasDriverSeat = collectSeats(base).stream().anyMatch(s ->
+                s.getPersistentDataContainer().getOrDefault(plugin.seatKey(),
+                    PersistentDataType.INTEGER, -1) == 0);
+            if (!hasDriverSeat) plugin.spawnSeat(base, 0);
             // repair pass for older cars: drop the glow-in-the-dark brightness
             // override so the body reacts to area lighting, and add the shadow
             for (Entity passenger : base.getPassengers()) {
@@ -239,13 +244,11 @@ public final class DriveTask implements Runnable {
                 .add(axisX.clone().multiply(off[0] * s))
                 .add(axisZ.clone().multiply(off[2] * s))
                 .add(0, off[1] * s + yBase, 0);
-            Vector delta = target.toVector().subtract(seat.getLocation().toVector());
-            if (delta.lengthSquared() > 36 && seat.getPassengers().isEmpty()) {
-                seat.teleport(target); // desynced empty seat snaps back
-            } else {
-                seat.setVelocity(delta);
-                seat.setRotation(yaw, 0);
-            }
+            // Armor stands ignore velocity entirely (the "seat stayed at the
+            // spawn point" bug) - teleport them instead, keeping the rider
+            // aboard with Paper's RETAIN_PASSENGERS flag.
+            target.setYaw(yaw);
+            seat.teleport(target, io.papermc.paper.entity.TeleportFlag.EntityState.RETAIN_PASSENGERS);
         }
     }
 
