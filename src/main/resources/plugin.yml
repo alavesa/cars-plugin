@@ -1,6 +1,7 @@
 name: Cars
-version: '0.3.2'
+version: '0.4.0'
 main: fi.alavesa.cars.CarsPlugin
+softdepend: [Labra]
 api-version: '1.21'
 author: Piia Alavesa
 description: Config-driven rideable vehicles - real WASD driving, custom models.

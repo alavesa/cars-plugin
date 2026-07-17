@@ -37,6 +37,33 @@ public final class DriveTask implements Runnable {
     public static final String TAG_PART = "cars.part";
     public static final String TAG_SEAT = "cars.seat";
 
+    // ------------------------------------------------------------- drift knobs
+    /** Above this speed (blocks/s) a sharp turn breaks traction into a slide. */
+    private static final double DRIFT_SPEED = 5.0;
+    /** How much the pointing yaw must lead the velocity heading (degrees) for
+     *  the slide to kick in - below this it's just normal cornering grip. */
+    private static final double DRIFT_ANGLE = 18.0;
+    /** Per-tick fraction the velocity heading chases the pointing yaw while
+     *  drifting: low = long lazy slides, high = the tail snaps back fast. */
+    private static final double DRIFT_GRIP = 0.12;
+    /** Per-tick catch-up when NOT drifting - grip is basically total, so
+     *  straight-line driving points exactly where the nose points. */
+    private static final double GRIP_NORMAL = 0.9;
+    /** How fast the drift state fades once the slide angle drops back down. */
+    private static final double DRIFT_DECAY = 0.85;
+
+    // --------------------------------------------------------- camera sway knobs
+    /** Idle engine shake amplitude (degrees of roll) when barely moving. */
+    private static final float SWAY_IDLE = 0.6f;
+    /** Extra roll amplitude (degrees) added at full speed - the fast bounce. */
+    private static final float SWAY_SPEED = 3.5f;
+    /** Vertical bob amplitude (blocks) added at full speed. */
+    private static final float BOB_SPEED = 0.05f;
+    /** How hard the model leans into a drift (degrees of roll per unit slide). */
+    private static final float LEAN_PER_DRIFT = 0.5f;
+    /** Sway/bob oscillation speed - radians of phase advanced per tick. */
+    private static final double SWAY_RATE = 0.55;
+
     /** Fallback seat offsets [x, y, z] when the model file names none.
      *  Index 0 is the driver. Model space axes: +Z forward, +X across. */
     private static final double[][] DEFAULT_SEATS = {
@@ -50,6 +77,13 @@ public final class DriveTask implements Runnable {
     private final Map<UUID, Float> yaws = new HashMap<>();
     private final Map<UUID, Double> lastY = new HashMap<>();
     private final Map<UUID, Float> tilt = new HashMap<>();
+    /** The heading (degrees) our velocity actually travels along - it lags
+     *  the pointing yaw during a drift, then grips back onto it. */
+    private final Map<UUID, Float> velHeading = new HashMap<>();
+    /** Smoothed drift amount (signed slide angle) driving the lean + smoke. */
+    private final Map<UUID, Float> drift = new HashMap<>();
+    /** Smoothed model roll so the sway eases in and out (no snap). */
+    private final Map<UUID, Float> roll = new HashMap<>();
 
     /** How the ground drives back: [speed factor, grip]. */
     private static double[] surface(Block ground, boolean inWater) {
@@ -166,7 +200,27 @@ public final class DriveTask implements Runnable {
 
         double radians = Math.toRadians(yaw);
         Vector forward = new Vector(-Math.sin(radians), 0, Math.cos(radians));
-        Vector desired = forward.clone().multiply(speed / 20.0);
+
+        // ---- drift: the velocity heading lags the nose, then grips back ----
+        // velHeading is where we're actually sliding. When the nose swings
+        // ahead of it faster than grip can follow (sharp turn at speed), the
+        // gap opens and the car slides sideways; grip then reels it back in.
+        float vh = velHeading.getOrDefault(base.getUniqueId(), yaw);
+        float gap = wrapDegrees(yaw - vh);
+        boolean drifting = Math.abs(speed) > DRIFT_SPEED && Math.abs(gap) > DRIFT_ANGLE;
+        // reversing points the slide the other way so the tail behaves
+        double catchUp = drifting ? DRIFT_GRIP : GRIP_NORMAL;
+        vh += (float) (gap * catchUp);
+        velHeading.put(base.getUniqueId(), vh);
+        // smoothed, signed slide angle for lean + smoke feedback
+        float driftAmount = drift.getOrDefault(base.getUniqueId(), 0f);
+        driftAmount = (float) (driftAmount * DRIFT_DECAY
+            + (drifting ? gap : 0f) * (1 - DRIFT_DECAY));
+        drift.put(base.getUniqueId(), driftAmount);
+
+        double vhRad = Math.toRadians(vh);
+        Vector slideDir = new Vector(-Math.sin(vhRad), 0, Math.cos(vhRad));
+        Vector desired = slideDir.multiply(speed / 20.0);
         // low grip = momentum wins over steering: hello, ice
         Vector kept = momentum.getOrDefault(base.getUniqueId(), desired.clone());
         Vector velocity = kept.multiply(1.0 - grip).add(desired.multiply(grip));
@@ -187,8 +241,26 @@ public final class DriveTask implements Runnable {
         if (Math.abs(speed) < 0.3) smoothTilt *= 0.8f;
         tilt.put(base.getUniqueId(), smoothTilt);
 
+        // ---- camera sway: Paper can't move the real camera, so we shake the
+        // MODEL. A sine-driven roll and a cosine-driven vertical bob, both
+        // scaling from a gentle idle shudder to a real bounce at speed, plus
+        // a lean INTO the current drift. Roll + bob live on the display's
+        // transform (visual only - the pig physics never sees them).
+        double speedFrac = Math.min(1.0, Math.abs(speed) / Math.max(0.1, type.maxSpeed));
+        double phase = tick * SWAY_RATE;
+        float swayAmp = SWAY_IDLE + SWAY_SPEED * (float) speedFrac;
+        float targetRoll = swayAmp * (float) Math.sin(phase)
+            + driftAmount * LEAN_PER_DRIFT;      // lean the body into the slide
+        float smoothRoll = roll.getOrDefault(base.getUniqueId(), 0f);
+        smoothRoll += (targetRoll - smoothRoll) * 0.3f; // ease, never teleport
+        roll.put(base.getUniqueId(), smoothRoll);
+        float bob = BOB_SPEED * (float) speedFrac * (float) Math.cos(phase * 2);
+
         for (Entity passenger : base.getPassengers()) {
-            if (passenger instanceof ItemDisplay display) display.setRotation(yaw, smoothTilt);
+            if (passenger instanceof ItemDisplay display) {
+                display.setRotation(yaw, smoothTilt);
+                applySway(display, type, smoothRoll, bob);
+            }
         }
         if (Math.abs(speed) > 0.4 && tick % 6 == 0) {
             float pitch = (float) (0.6 + Math.abs(speed) / type.maxSpeed);
@@ -204,10 +276,59 @@ public final class DriveTask implements Runnable {
             base.getWorld().playSound(at, Sound.BLOCK_FIRE_EXTINGUISH, 0.5f, 1.3f);
             base.getWorld().spawnParticle(Particle.SPLASH, at, 12, 0.5, 0.2, 0.5, 0);
         }
+        // cosy campfire smoke curling off the rear wheels while sliding
+        if (Math.abs(driftAmount) > DRIFT_ANGLE * 0.6 && tick % 2 == 0) {
+            Vector rear = forward.clone().multiply(-0.9);
+            Vector side = new Vector(Math.cos(radians), 0, Math.sin(radians)).multiply(0.5);
+            Location rearAxle = at.clone().add(rear).add(0, 0.1, 0);
+            base.getWorld().spawnParticle(Particle.CAMPFIRE_COSY_SMOKE,
+                rearAxle.clone().add(side), 2, 0.1, 0.02, 0.1, 0.005);
+            base.getWorld().spawnParticle(Particle.CAMPFIRE_COSY_SMOKE,
+                rearAxle.clone().subtract(side), 2, 0.1, 0.02, 0.1, 0.005);
+        }
+        // speedometer on the driver's actionbar - top line, above everything
+        if (driver != null) showSpeedometer(driver, Math.abs(speed));
         ItemDisplay body = base.getPassengers().stream()
             .filter(e -> e instanceof ItemDisplay).map(e -> (ItemDisplay) e)
             .findFirst().orElse(null);
         positionSeats(base, type, body, seats, yaw);
+    }
+
+    /** Shortest signed distance between two yaws, in [-180, 180). */
+    private static float wrapDegrees(double degrees) {
+        double d = ((degrees + 180) % 360 + 360) % 360 - 180;
+        return (float) d;
+    }
+
+    /** Rolls and bobs the model on its own transform - a visual-only shake
+     *  layered on top of the base offset/scale from the CarType. The pig and
+     *  the seat stands never see it, so driving physics stay untouched. */
+    private void applySway(ItemDisplay display, CarType type, float rollDeg, float bobY) {
+        org.joml.AxisAngle4f leftRotation = new org.joml.AxisAngle4f(
+            (float) Math.toRadians(rollDeg), 0f, 0f, 1f); // roll about forward axis
+        display.setTransformation(new org.bukkit.util.Transformation(
+            new org.joml.Vector3f((float) type.offsetX,
+                (float) type.offsetY + bobY, (float) type.offsetZ),
+            leftRotation,
+            new org.joml.Vector3f((float) type.scale, (float) type.scale, (float) type.scale),
+            new org.joml.AxisAngle4f(0, 0, 0, 1)));
+    }
+
+    /** "⏲ 14.2 blocks/s" on the driver's actionbar, green->yellow->red as it
+     *  climbs. Routed through {@link Msg#speedometer} so, when Labra is on the
+     *  server, it rides the ActionBars hub's TOP slot and reads out ABOVE the
+     *  NVG battery bar and any other indicator. */
+    private void showSpeedometer(Player driver, double blocksPerTick) {
+        double bps = blocksPerTick * 20.0; // blocks/tick -> blocks/second
+        // colour ramps with speed: 0 -> green, ~14+ -> red
+        float hue = (float) (0.33 - 0.33 * Math.min(1.0, bps / 14.0)); // 0.33=green,0=red
+        net.kyori.adventure.text.format.TextColor color =
+            net.kyori.adventure.text.format.TextColor.color(
+                java.awt.Color.HSBtoRGB(hue, 0.85f, 1.0f));
+        net.kyori.adventure.text.Component line = net.kyori.adventure.text.Component
+            .text(String.format(java.util.Locale.ROOT, "⏲ %.1f blocks/s", bps))
+            .color(color);
+        Msg.speedometer(driver, line);
     }
 
     /** All seat stands of this car, sorted by seat index (0 = driver). */

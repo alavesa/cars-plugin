@@ -56,12 +56,12 @@ public final class CarListener implements Listener {
             seat.addPassenger(player);
             int index = seat.getPersistentDataContainer().getOrDefault(
                 plugin.seatKey(), org.bukkit.persistence.PersistentDataType.INTEGER, 0);
-            player.sendActionBar(Component.text(index == 0
+            Msg.actionbar(player, Component.text(index == 0
                 ? "You're driving. WASD; sneak to get out."
                 : "Passenger seat. Sneak to get out.", NamedTextColor.GRAY));
             return;
         }
-        player.sendActionBar(Component.text("The car is full.", NamedTextColor.GRAY));
+        Msg.actionbar(player, Component.text("The car is full.", NamedTextColor.GRAY));
     }
 
     private Pig resolveCar(Entity clicked) {

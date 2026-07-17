@@ -6,7 +6,7 @@
 
   <groupId>fi.alavesa</groupId>
   <artifactId>cars-plugin</artifactId>
-  <version>0.3.2</version>
+  <version>0.4.0</version>
   <packaging>jar</packaging>
 
   <name>Cars</name>
@@ -25,6 +25,15 @@
   </repositories>
 
   <dependencies>
+    <dependency>
+      <!-- ActionBars hub - the speedometer rides its top slot, above the
+           NVG battery line. Soft dep, reached reflectively: Cars runs fine
+           without Labra on the server. -->
+      <groupId>fi.alavesa</groupId>
+      <artifactId>labra-plugin</artifactId>
+      <version>0.19.0</version>
+      <scope>provided</scope>
+    </dependency>
     <dependency>
       <groupId>io.papermc.paper</groupId>
       <artifactId>paper-api</artifactId>
