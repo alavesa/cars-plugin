@@ -39,10 +39,10 @@ public final class DriveTask implements Runnable {
 
     // ------------------------------------------------------------- drift knobs
     /** Above this speed (blocks/s) a sharp turn breaks traction into a slide. */
-    private static final double DRIFT_SPEED = 5.0;
+    private static final double DRIFT_SPEED = 4.0;
     /** How much the pointing yaw must lead the velocity heading (degrees) for
      *  the slide to kick in - below this it's just normal cornering grip. */
-    private static final double DRIFT_ANGLE = 18.0;
+    private static final double DRIFT_ANGLE = 14.0;
     /** Per-tick fraction the velocity heading chases the pointing yaw while
      *  drifting: low = long lazy slides, high = the tail snaps back fast. */
     private static final double DRIFT_GRIP = 0.12;
@@ -167,8 +167,10 @@ public final class DriveTask implements Runnable {
         float yaw = yaws.computeIfAbsent(base.getUniqueId(),
             id -> base.getLocation().getYaw());
 
+        boolean handbrake = false;   // sneak = handbrake: intentional drifting
         if (driver != null) {
             Input input = inputs.get(driver.getUniqueId());
+            handbrake = input != null && input.isSneak() && Math.abs(speed) > 0.4;
             double perTickAccel = type.acceleration / 20.0;
             if (input != null) {
                 if (input.isForward()) speed += perTickAccel;
@@ -207,7 +209,11 @@ public final class DriveTask implements Runnable {
         // gap opens and the car slides sideways; grip then reels it back in.
         float vh = velHeading.getOrDefault(base.getUniqueId(), yaw);
         float gap = wrapDegrees(yaw - vh);
-        boolean drifting = Math.abs(speed) > DRIFT_SPEED && Math.abs(gap) > DRIFT_ANGLE;
+        // Drift when the handbrake (sneak) is held at speed, or a turn is sharp
+        // enough that grip can't hold the tail. Handbrake is the reliable,
+        // discoverable trigger; the sharp-turn path lets it happen naturally too.
+        boolean sharpDrift = Math.abs(speed) > DRIFT_SPEED && Math.abs(gap) > DRIFT_ANGLE;
+        boolean drifting = Math.abs(speed) > DRIFT_SPEED && (handbrake || sharpDrift);
         // reversing points the slide the other way so the tail behaves
         double catchUp = drifting ? DRIFT_GRIP : GRIP_NORMAL;
         vh += (float) (gap * catchUp);
@@ -248,7 +254,10 @@ public final class DriveTask implements Runnable {
         // transform (visual only - the pig physics never sees them).
         double speedFrac = Math.min(1.0, Math.abs(speed) / Math.max(0.1, type.maxSpeed));
         double phase = tick * SWAY_RATE;
-        float swayAmp = SWAY_IDLE + SWAY_SPEED * (float) speedFrac;
+        // The idle engine-shudder only runs while someone is aboard. An empty
+        // car that has rolled to a stop rests flat - no perpetual wiggle.
+        float idleAmp = driver != null ? SWAY_IDLE : 0f;
+        float swayAmp = idleAmp + SWAY_SPEED * (float) speedFrac;
         float targetRoll = swayAmp * (float) Math.sin(phase)
             + driftAmount * LEAN_PER_DRIFT;      // lean the body into the slide
         float smoothRoll = roll.getOrDefault(base.getUniqueId(), 0f);
@@ -276,15 +285,21 @@ public final class DriveTask implements Runnable {
             base.getWorld().playSound(at, Sound.BLOCK_FIRE_EXTINGUISH, 0.5f, 1.3f);
             base.getWorld().spawnParticle(Particle.SPLASH, at, 12, 0.5, 0.2, 0.5, 0);
         }
-        // cosy campfire smoke curling off the rear wheels while sliding
-        if (Math.abs(driftAmount) > DRIFT_ANGLE * 0.6 && tick % 2 == 0) {
-            Vector rear = forward.clone().multiply(-0.9);
-            Vector side = new Vector(Math.cos(radians), 0, Math.sin(radians)).multiply(0.5);
-            Location rearAxle = at.clone().add(rear).add(0, 0.1, 0);
-            base.getWorld().spawnParticle(Particle.CAMPFIRE_COSY_SMOKE,
-                rearAxle.clone().add(side), 2, 0.1, 0.02, 0.1, 0.005);
-            base.getWorld().spawnParticle(Particle.CAMPFIRE_COSY_SMOKE,
-                rearAxle.clone().subtract(side), 2, 0.1, 0.02, 0.1, 0.005);
+        // cosy campfire smoke curling off ALL FOUR wheels while drifting
+        if (drifting && tick % 2 == 0) {
+            Vector fwd = forward.clone();                               // nose direction
+            Vector side = new Vector(Math.cos(radians), 0, Math.sin(radians)); // right
+            Location center = at.clone().add(0, 0.1, 0);
+            double halfLen = 0.9, halfWid = 0.5;                        // wheelbase / track
+            for (int f = -1; f <= 1; f += 2) {                         // front / rear
+                for (int s = -1; s <= 1; s += 2) {                     // left / right
+                    Location wheel = center.clone()
+                        .add(fwd.clone().multiply(halfLen * f))
+                        .add(side.clone().multiply(halfWid * s));
+                    base.getWorld().spawnParticle(Particle.CAMPFIRE_COSY_SMOKE,
+                        wheel, 2, 0.08, 0.02, 0.08, 0.005);
+                }
+            }
         }
         // speedometer on the driver's actionbar - top line, above everything
         if (driver != null) showSpeedometer(driver, Math.abs(speed));
@@ -318,8 +333,11 @@ public final class DriveTask implements Runnable {
      *  climbs. Routed through {@link Msg#speedometer} so, when Labra is on the
      *  server, it rides the ActionBars hub's TOP slot and reads out ABOVE the
      *  NVG battery bar and any other indicator. */
-    private void showSpeedometer(Player driver, double blocksPerTick) {
-        double bps = blocksPerTick * 20.0; // blocks/tick -> blocks/second
+    private void showSpeedometer(Player driver, double blocksPerSecond) {
+        // `speed` already IS blocks/second: the per-tick velocity is speed/20,
+        // so over 20 ticks the car covers `speed` blocks. (The old code did a
+        // second x20 here and read ~180 for a ~9 blocks/s car.)
+        double bps = blocksPerSecond;
         // colour ramps with speed: 0 -> green, ~14+ -> red
         float hue = (float) (0.33 - 0.33 * Math.min(1.0, bps / 14.0)); // 0.33=green,0=red
         net.kyori.adventure.text.format.TextColor color =
