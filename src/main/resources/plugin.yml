@@ -1,5 +1,5 @@
 name: Cars
-version: '0.4.1'
+version: '0.4.2'
 main: fi.alavesa.cars.CarsPlugin
 softdepend: [Labra]
 api-version: '1.21'
