@@ -3,7 +3,6 @@ version: '0.4.1'
 main: fi.alavesa.cars.CarsPlugin
 softdepend: [Labra]
 api-version: '1.21'
-author: Piia Alavesa
 description: Config-driven rideable vehicles - real WASD driving, custom models.
 commands:
   car:
