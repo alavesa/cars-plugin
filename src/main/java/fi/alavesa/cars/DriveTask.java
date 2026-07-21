@@ -51,6 +51,13 @@ public final class DriveTask implements Runnable {
     private static final double GRIP_NORMAL = 0.9;
     /** How fast the drift state fades once the slide angle drops back down. */
     private static final double DRIFT_DECAY = 0.85;
+    /** While drifting, the surface grip is scaled by this so the car keeps its
+     *  momentum and actually SLIDES (even on high-grip pavement) instead of
+     *  snapping to the nose. Lower = looser, longer slides. */
+    private static final double DRIFT_TRACTION = 0.45;
+    /** Sneak only EXITS the car below this speed (blocks/s); at or above it, sneak
+     *  is the drift handbrake and does not dismount the driver (see CarListener). */
+    public static final double HANDBRAKE_MIN_SPEED = 3.0;
 
     // --------------------------------------------------------- camera sway knobs
     /** Idle engine shake amplitude (degrees of roll) when barely moving. */
@@ -111,6 +118,12 @@ public final class DriveTask implements Runnable {
 
     public void forget(UUID player) {
         inputs.remove(player);
+    }
+
+    /** Current speed (blocks/s, unsigned) of the car with this pig UUID - used by
+     *  the dismount guard so sneak is a handbrake at speed, an exit when slow. */
+    public double carSpeed(UUID carId) {
+        return Math.abs(speeds.getOrDefault(carId, 0.0));
     }
 
     @Override
@@ -229,7 +242,11 @@ public final class DriveTask implements Runnable {
         Vector desired = slideDir.multiply(speed / 20.0);
         // low grip = momentum wins over steering: hello, ice
         Vector kept = momentum.getOrDefault(base.getUniqueId(), desired.clone());
-        Vector velocity = kept.multiply(1.0 - grip).add(desired.multiply(grip));
+        // While drifting we deliberately lose traction so momentum (the old
+        // velocity) carries the car sideways instead of instantly following the
+        // nose - that's the actual slide, felt even on full-grip pavement.
+        double effGrip = drifting ? grip * DRIFT_TRACTION : grip;
+        Vector velocity = kept.multiply(1.0 - effGrip).add(desired.multiply(effGrip));
         momentum.put(base.getUniqueId(), velocity.clone());
         velocity.setY(Math.min(0.1, base.getVelocity().getY())); // gravity keeps working
         base.setVelocity(velocity);
