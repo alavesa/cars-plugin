@@ -9,6 +9,20 @@
           "type": "minecraft:model",
           "model": "cars:vehicle/jeep"
         }
+      },
+      {
+        "when": "monorail_cart",
+        "model": {
+          "type": "minecraft:model",
+          "model": "cars:vehicle/monorail_cart"
+        }
+      },
+      {
+        "when": "monorail_rail",
+        "model": {
+          "type": "minecraft:model",
+          "model": "cars:vehicle/monorail_rail"
+        }
       }
     ],
     "fallback": {

@@ -6,7 +6,7 @@
 
   <groupId>fi.alavesa</groupId>
   <artifactId>cars-plugin</artifactId>
-  <version>0.4.3</version>
+  <version>0.5.0</version>
   <packaging>jar</packaging>
 
   <name>Cars</name>
@@ -44,5 +44,11 @@
 
   <build>
     <finalName>Cars-${project.version}</finalName>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>true</filtering>
+      </resource>
+    </resources>
   </build>
 </project>

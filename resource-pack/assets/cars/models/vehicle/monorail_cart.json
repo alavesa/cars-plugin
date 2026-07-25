@@ -1,0 +1,70 @@
+{
+  "textures": {
+    "particle": "minecraft:block/iron_block",
+    "body": "minecraft:block/light_blue_concrete",
+    "roof": "minecraft:block/light_gray_concrete",
+    "floor": "minecraft:block/gray_concrete",
+    "glass": "minecraft:block/light_blue_stained_glass",
+    "trim": "minecraft:block/iron_block",
+    "light": "minecraft:block/glowstone"
+  },
+  "elements": [
+    {
+      "name": "floor",
+      "from": [2, 1, -8],
+      "to": [14, 3, 24],
+      "faces": {
+        "north": {"texture": "#floor"}, "south": {"texture": "#floor"},
+        "east": {"texture": "#floor"}, "west": {"texture": "#floor"},
+        "up": {"texture": "#floor"}, "down": {"texture": "#floor"}
+      }
+    },
+    {
+      "name": "lower-body",
+      "from": [1, 3, -8],
+      "to": [15, 8, 24],
+      "faces": {
+        "north": {"texture": "#trim"}, "south": {"texture": "#trim"},
+        "east": {"texture": "#body"}, "west": {"texture": "#body"},
+        "up": {"texture": "#body"}, "down": {"texture": "#floor"}
+      }
+    },
+    {
+      "name": "windows",
+      "from": [1, 8, -8],
+      "to": [15, 12, 24],
+      "faces": {
+        "north": {"texture": "#glass"}, "south": {"texture": "#glass"},
+        "east": {"texture": "#glass"}, "west": {"texture": "#glass"},
+        "up": {"texture": "#body"}, "down": {"texture": "#body"}
+      }
+    },
+    {
+      "name": "roof",
+      "from": [1, 12, -8],
+      "to": [15, 14, 24],
+      "faces": {
+        "north": {"texture": "#roof"}, "south": {"texture": "#roof"},
+        "east": {"texture": "#roof"}, "west": {"texture": "#roof"},
+        "up": {"texture": "#roof"}, "down": {"texture": "#roof"}
+      }
+    },
+    {
+      "name": "headlight",
+      "from": [5, 5, 24],
+      "to": [11, 10, 25],
+      "faces": {
+        "north": {"texture": "#light"}, "south": {"texture": "#light"},
+        "east": {"texture": "#light"}, "west": {"texture": "#light"},
+        "up": {"texture": "#light"}, "down": {"texture": "#light"}
+      }
+    }
+  ],
+  "display": {
+    "fixed": {
+      "rotation": [0, 0, 0],
+      "translation": [0, 0, 0],
+      "scale": [1, 1, 1]
+    }
+  }
+}

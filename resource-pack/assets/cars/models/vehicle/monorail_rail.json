@@ -1,0 +1,47 @@
+{
+  "textures": {
+    "particle": "minecraft:block/iron_block",
+    "beam": "minecraft:block/gray_concrete",
+    "cap": "minecraft:block/iron_block",
+    "stripe": "minecraft:block/yellow_concrete"
+  },
+  "elements": [
+    {
+      "name": "beam",
+      "from": [5, 1, -8],
+      "to": [11, 8, 8],
+      "faces": {
+        "north": {"texture": "#beam"}, "south": {"texture": "#beam"},
+        "east": {"texture": "#beam"}, "west": {"texture": "#beam"},
+        "up": {"texture": "#beam"}, "down": {"texture": "#beam"}
+      }
+    },
+    {
+      "name": "cap",
+      "from": [4, 8, -8],
+      "to": [12, 10, 8],
+      "faces": {
+        "north": {"texture": "#cap"}, "south": {"texture": "#cap"},
+        "east": {"texture": "#cap"}, "west": {"texture": "#cap"},
+        "up": {"texture": "#cap"}, "down": {"texture": "#cap"}
+      }
+    },
+    {
+      "name": "stripe",
+      "from": [4, 10, -8],
+      "to": [12, 11, 8],
+      "faces": {
+        "north": {"texture": "#stripe"}, "south": {"texture": "#stripe"},
+        "east": {"texture": "#stripe"}, "west": {"texture": "#stripe"},
+        "up": {"texture": "#stripe"}, "down": {"texture": "#stripe"}
+      }
+    }
+  ],
+  "display": {
+    "fixed": {
+      "rotation": [0, 0, 0],
+      "translation": [0, 0, 0],
+      "scale": [1, 1, 1]
+    }
+  }
+}

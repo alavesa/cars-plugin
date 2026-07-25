@@ -1,5 +1,5 @@
 name: Cars
-version: '0.4.2'
+version: '${project.version}'
 main: fi.alavesa.cars.CarsPlugin
 softdepend: [Labra]
 api-version: '1.21'
@@ -13,6 +13,7 @@ commands:
       /car list
       /car spawn <id>
       /car remove        (cars within 16 blocks)
+      /car monorail line|node|build|cart|list|remove|scrap <name>
 permissions:
   cars.admin:
     description: Manage vehicles
