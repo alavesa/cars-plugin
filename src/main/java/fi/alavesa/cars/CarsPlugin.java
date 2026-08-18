@@ -36,12 +36,20 @@ public final class CarsPlugin extends JavaPlugin {
     private NamespacedKey typeKey;
     private NamespacedKey carKey;
     private NamespacedKey seatKey;
+    private NamespacedKey healthKey;    // current hit points, on the base Pig
+    private NamespacedKey cargoKey;     // serialized cargo contents, on the base Pig
+    private NamespacedKey wreckedKey;   // 1 once destroyed, on the base Pig
+    private NamespacedKey attackKey;    // last-seen attack timestamp, on the Interaction hitbox
 
     @Override
     public void onEnable() {
         typeKey = new NamespacedKey(this, "type");
         carKey = new NamespacedKey(this, "car");
         seatKey = new NamespacedKey(this, "seat");
+        healthKey = new NamespacedKey(this, "health");
+        cargoKey = new NamespacedKey(this, "cargo");
+        wreckedKey = new NamespacedKey(this, "wrecked");
+        attackKey = new NamespacedKey(this, "last_attack");
         getConfig().addDefault("seat-y-adjust", -0.72);
         getConfig().addDefault("monorail.speed", 0.3);
         getConfig().addDefault("monorail.arrive", 0.7);
@@ -70,6 +78,10 @@ public final class CarsPlugin extends JavaPlugin {
     public NamespacedKey typeKey() { return typeKey; }
     public NamespacedKey carKey() { return carKey; }
     public NamespacedKey seatKey() { return seatKey; }
+    public NamespacedKey healthKey() { return healthKey; }
+    public NamespacedKey cargoKey() { return cargoKey; }
+    public NamespacedKey wreckedKey() { return wreckedKey; }
+    public NamespacedKey attackKey() { return attackKey; }
 
     // ------------------------------------------------------------- spawning
 
@@ -87,6 +99,7 @@ public final class CarsPlugin extends JavaPlugin {
             pig.getAttribute(Attribute.STEP_HEIGHT).setBaseValue(1.1);
             pig.addScoreboardTag(DriveTask.TAG_CAR);
             pig.getPersistentDataContainer().set(typeKey, PersistentDataType.STRING, type.id);
+            pig.getPersistentDataContainer().set(healthKey, PersistentDataType.DOUBLE, type.maxHealth);
         });
         // AI must stay ON (NoAI freezes velocity processing entirely), but
         // aware=false stops all of the pig's own decision-making - and unlike
@@ -145,6 +158,124 @@ public final class CarsPlugin extends JavaPlugin {
         });
     }
 
+    // ------------------------------------------------------- health & wreck
+
+    public CarType typeOf(Pig base) {
+        String id = base.getPersistentDataContainer().get(typeKey, PersistentDataType.STRING);
+        return id == null ? null : registry.get(id);
+    }
+
+    public boolean isWrecked(Pig base) {
+        return base.getPersistentDataContainer().getOrDefault(wreckedKey, PersistentDataType.INTEGER, 0) == 1;
+    }
+
+    public ItemDisplay bodyOf(Pig base) {
+        for (Entity p : base.getPassengers()) {
+            if (p instanceof ItemDisplay d && d.getScoreboardTags().contains(DriveTask.TAG_PART)) return d;
+        }
+        return null;
+    }
+
+    public Interaction hitboxOf(Pig base) {
+        for (Entity p : base.getPassengers()) {
+            if (p instanceof Interaction i && i.getScoreboardTags().contains(DriveTask.TAG_PART)) return i;
+        }
+        return null;
+    }
+
+    /** Apply damage to a car; wreck it when its health runs out. No-op on an already-wrecked car. */
+    public void damageCar(Pig base, double amount, Player source) {
+        if (isWrecked(base) || amount <= 0) return;
+        CarType type = typeOf(base);
+        double max = type != null ? type.maxHealth : 100.0;
+        double health = base.getPersistentDataContainer().getOrDefault(healthKey, PersistentDataType.DOUBLE, max);
+        health -= amount;
+        base.getWorld().playSound(base.getLocation(), org.bukkit.Sound.ENTITY_IRON_GOLEM_DAMAGE, 0.7f, 1.4f);
+        base.getWorld().spawnParticle(org.bukkit.Particle.CRIT, base.getLocation().add(0, 1, 0), 8, 0.6, 0.4, 0.6, 0.1);
+        if (health <= 0) {
+            wreckCar(base);
+        } else {
+            base.getPersistentDataContainer().set(healthKey, PersistentDataType.DOUBLE, health);
+            if (health <= max * 0.3) {
+                base.getWorld().spawnParticle(org.bukkit.Particle.SMOKE, base.getLocation().add(0, 1, 0), 6, 0.5, 0.3, 0.5, 0.02);
+            }
+            if (source != null) {
+                Msg.actionbar(source, Component.text("Car health: " + (int) Math.ceil(health) + " / "
+                    + (int) max, health <= max * 0.3 ? NamedTextColor.RED : NamedTextColor.YELLOW));
+            }
+        }
+    }
+
+    /** Turn a car into an inert wreck: same model, swapped to the wreck texture, undrivable, no seats. */
+    public void wreckCar(Pig base) {
+        if (isWrecked(base)) return;
+        CarType type = typeOf(base);
+        base.getPersistentDataContainer().set(wreckedKey, PersistentDataType.INTEGER, 1);
+        base.getPersistentDataContainer().set(healthKey, PersistentDataType.DOUBLE, 0.0);
+        // eject everyone and delete the seats - a wreck can't be driven or ridden
+        for (ArmorStand seat : task.collectSeats(base)) {
+            for (Entity rider : seat.getPassengers()) if (rider instanceof Player) seat.removePassenger(rider);
+            seat.remove();
+        }
+        base.removeScoreboardTag(DriveTask.TAG_CAR);   // DriveTask stops ticking it; no throttle/steering
+        // drop the cargo hold on the ground so it isn't lost inside an unusable wreck
+        dropCargo(base);
+        // swap the body model to the wreck variant
+        ItemDisplay body = bodyOf(base);
+        if (body != null && type != null) {
+            ItemStack item = new ItemStack(Material.MINECART);
+            ItemMeta meta = item.getItemMeta();
+            CustomModelDataComponent c = meta.getCustomModelDataComponent();
+            c.setStrings(List.of(type.wreckModel));
+            meta.setCustomModelDataComponent(c);
+            item.setItemMeta(meta);
+            body.setItemStack(item);
+        }
+        base.getWorld().playSound(base.getLocation(), org.bukkit.Sound.ENTITY_GENERIC_EXPLODE, 1.0f, 0.8f);
+        base.getWorld().spawnParticle(org.bukkit.Particle.LARGE_SMOKE, base.getLocation().add(0, 1, 0), 30, 0.8, 0.6, 0.8, 0.05);
+    }
+
+    // ----------------------------------------------------------------- cargo
+
+    /** Open a car's cargo hold, loading its saved contents. */
+    public void openCargo(Player player, Pig base, CarType type) {
+        int size = Math.max(1, Math.min(6, type.cargoRows)) * 9;
+        org.bukkit.inventory.Inventory inv = getServer().createInventory(
+            new CargoHolder(base.getUniqueId()), size,
+            Component.text(type.name + " — Cargo", NamedTextColor.DARK_GRAY));
+        byte[] data = base.getPersistentDataContainer().get(cargoKey, PersistentDataType.BYTE_ARRAY);
+        if (data != null && data.length > 0) {
+            try {
+                ItemStack[] items = ItemStack.deserializeItemsFromBytes(data);
+                for (int i = 0; i < items.length && i < size; i++) inv.setItem(i, items[i]);
+            } catch (Throwable ignored) { }
+        }
+        player.openInventory(inv);
+    }
+
+    /** Persist a cargo inventory back onto the base Pig. */
+    public void saveCargo(Pig base, org.bukkit.inventory.Inventory inv) {
+        base.getPersistentDataContainer().set(cargoKey, PersistentDataType.BYTE_ARRAY,
+            ItemStack.serializeItemsAsBytes(inv.getContents()));
+    }
+
+    /** Spill a wrecked car's cargo onto the ground. */
+    private void dropCargo(Pig base) {
+        byte[] data = base.getPersistentDataContainer().get(cargoKey, PersistentDataType.BYTE_ARRAY);
+        if (data == null || data.length == 0) return;
+        try {
+            for (ItemStack it : ItemStack.deserializeItemsFromBytes(data)) {
+                if (it != null && !it.getType().isAir()) base.getWorld().dropItemNaturally(base.getLocation(), it);
+            }
+        } catch (Throwable ignored) { }
+        base.getPersistentDataContainer().remove(cargoKey);
+    }
+
+    /** Marks an inventory as a car's cargo hold and remembers which car it belongs to. */
+    public record CargoHolder(java.util.UUID carId) implements org.bukkit.inventory.InventoryHolder {
+        @Override public org.bukkit.inventory.Inventory getInventory() { return null; }
+    }
+
     // ------------------------------------------------------------- command
 
     @Override
@@ -181,8 +312,11 @@ public final class CarsPlugin extends JavaPlugin {
                         case "offset-y" -> type.offsetY = Double.parseDouble(value);
                         case "offset-z" -> type.offsetZ = Double.parseDouble(value);
                         case "seat-y-adjust" -> type.seatYAdjust = Double.parseDouble(value);
+                        case "cargo-rows" -> type.cargoRows = Math.max(0, Math.min(6, Integer.parseInt(value)));
+                        case "max-health" -> type.maxHealth = Math.max(1.0, Double.parseDouble(value));
+                        case "wreck-model" -> type.wreckModel = value;
                         default -> { return error(sender,
-                            "Properties: name, model, max-speed, acceleration, turn-rate, scale, sound, seats, offset-x/y/z, seat-y-adjust"); }
+                            "Properties: name, model, max-speed, acceleration, turn-rate, scale, sound, seats, offset-x/y/z, seat-y-adjust, cargo-rows, max-health, wreck-model"); }
                     }
                 } catch (NumberFormatException e) {
                     return error(sender, "That property takes a number.");
@@ -328,7 +462,8 @@ public final class CarsPlugin extends JavaPlugin {
             case 3 -> {
                 if (args[0].equalsIgnoreCase("edit")) {
                     yield filter(Stream.of("name", "model", "max-speed", "acceleration", "turn-rate",
-                        "scale", "sound", "seats", "offset-x", "offset-y", "offset-z", "seat-y-adjust"), args[2]);
+                        "scale", "sound", "seats", "offset-x", "offset-y", "offset-z", "seat-y-adjust",
+                        "cargo-rows", "max-health", "wreck-model"), args[2]);
                 }
                 if ((args[0].equalsIgnoreCase("monorail") || args[0].equalsIgnoreCase("rail"))
                     && Stream.of("node", "build", "cart", "remove").anyMatch(s -> s.equalsIgnoreCase(args[1]))) {

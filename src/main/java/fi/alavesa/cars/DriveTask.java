@@ -131,10 +131,34 @@ public final class DriveTask implements Runnable {
         tick++;
         for (World world : Bukkit.getWorlds()) {
             for (Pig pig : world.getEntitiesByClass(Pig.class)) {
-                if (pig.getScoreboardTags().contains(TAG_CAR)) tickCar(pig);
+                if (pig.getScoreboardTags().contains(TAG_CAR)) {
+                    tickCar(pig);
+                    pollPunch(pig);
+                }
             }
         }
         if (tick % 100 == 0) sweepOrphans();
+    }
+
+    /** Detect a left-click PUNCH on the car's hitbox (Interaction entities don't fire damage events, so we
+     *  poll their last-attack timestamp) and turn it into car damage. Gun SHOTS come through the damage
+     *  event in CarListener instead. */
+    private static final double PUNCH_DAMAGE = 4.0;
+    private void pollPunch(Pig base) {
+        org.bukkit.entity.Interaction hitbox = plugin.hitboxOf(base);
+        if (hitbox == null) return;
+        var attack = hitbox.getLastAttack();
+        if (attack == null) return;
+        long ts = attack.getTimestamp();
+        var pdc = hitbox.getPersistentDataContainer();
+        long seen = pdc.getOrDefault(plugin.attackKey(),
+            org.bukkit.persistence.PersistentDataType.LONG, 0L);
+        if (ts == seen) return;                       // already counted this punch
+        pdc.set(plugin.attackKey(), org.bukkit.persistence.PersistentDataType.LONG, ts);
+        if (seen == 0L) return;                        // first observation after (re)load: don't retro-punch
+        org.bukkit.entity.Player puncher = attack.getPlayer().isOnline()
+            ? Bukkit.getPlayer(attack.getPlayer().getUniqueId()) : null;
+        plugin.damageCar(base, PUNCH_DAMAGE, puncher);
     }
 
     private void tickCar(Pig base) {

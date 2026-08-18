@@ -41,7 +41,7 @@ public final class CarListener implements Listener {
         task.forget(event.getPlayer().getUniqueId());
     }
 
-    /** Click the car: driver's seat first, then passenger seats until full. */
+    /** Click the car: sneak+click opens the cargo hold (if any), otherwise take a seat. */
     @EventHandler
     public void onMount(PlayerInteractEntityEvent event) {
         if (event.getHand() != EquipmentSlot.HAND) return;
@@ -49,6 +49,18 @@ public final class CarListener implements Listener {
         if (base == null) return;
         event.setCancelled(true);
         Player player = event.getPlayer();
+        CarType type = plugin.typeOf(base);
+        // A wreck is inert - you can still open its cargo but you can't drive or sit in it.
+        if (plugin.isWrecked(base)) {
+            if (type != null && type.cargoRows > 0) plugin.openCargo(player, base, type);
+            else Msg.actionbar(player, Component.text("This car is wrecked.", NamedTextColor.RED));
+            return;
+        }
+        // Sneak + click a cargo vehicle (forklift/truck) opens its storage instead of seating you.
+        if (player.isSneaking() && type != null && type.cargoRows > 0) {
+            plugin.openCargo(player, base, type);
+            return;
+        }
         if (player.getVehicle() != null) return;
         var seats = task.collectSeats(base);
         for (ArmorStand seat : seats) {
@@ -106,13 +118,43 @@ public final class CarListener implements Listener {
         }
     }
 
-    /** Cars don't take damage - /car remove is the scrapyard. */
+    /** Cars take damage when shot or punched: convert it to car health instead of vanilla damage.
+     *  (Punches on the Interaction hitbox are also caught by the attack poll in DriveTask.) */
     @EventHandler
     public void onDamage(EntityDamageEvent event) {
         var tags = event.getEntity().getScoreboardTags();
-        if (tags.contains(DriveTask.TAG_CAR) || tags.contains(DriveTask.TAG_PART)
-            || tags.contains(DriveTask.TAG_SEAT)) {
-            event.setCancelled(true);
+        boolean carPart = tags.contains(DriveTask.TAG_CAR) || tags.contains(DriveTask.TAG_PART)
+            || tags.contains(DriveTask.TAG_SEAT);
+        if (!carPart) return;
+        event.setCancelled(true);                 // never let vanilla hurt/knock the car entities
+        Pig base = carBaseOf(event.getEntity());
+        if (base == null) return;
+        Player source = null;
+        if (event instanceof org.bukkit.event.entity.EntityDamageByEntityEvent byEntity) {
+            if (byEntity.getDamager() instanceof Player p) source = p;
+            else if (byEntity.getDamager() instanceof org.bukkit.entity.Projectile proj
+                && proj.getShooter() instanceof Player p) source = p;
         }
+        plugin.damageCar(base, event.getFinalDamage(), source);
+    }
+
+    /** Persist the cargo hold when its window closes. */
+    @EventHandler
+    public void onCargoClose(org.bukkit.event.inventory.InventoryCloseEvent event) {
+        if (!(event.getInventory().getHolder() instanceof CarsPlugin.CargoHolder holder)) return;
+        if (Bukkit.getEntity(holder.carId()) instanceof Pig base) {
+            plugin.saveCargo(base, event.getInventory());
+        }
+    }
+
+    /** Resolve the base Pig from any car part (Pig / ItemDisplay / Interaction / seat). */
+    private Pig carBaseOf(Entity entity) {
+        if (entity instanceof Pig pig && pig.getScoreboardTags().contains(DriveTask.TAG_CAR)) return pig;
+        if (entity.getVehicle() instanceof Pig pig && pig.getScoreboardTags().contains(DriveTask.TAG_CAR)) return pig;
+        if (entity instanceof ArmorStand seat && seat.getScoreboardTags().contains(DriveTask.TAG_SEAT)) {
+            String carId = seat.getPersistentDataContainer().get(plugin.carKey(), PersistentDataType.STRING);
+            if (carId != null && Bukkit.getEntity(UUID.fromString(carId)) instanceof Pig pig) return pig;
+        }
+        return null;
     }
 }

@@ -21,6 +21,9 @@ public final class CarType {
     public double offsetY;
     public double offsetZ;
     public double seatYAdjust;  // per-type rider height tweak, live-editable
+    public int cargoRows;       // 0 = no cargo hold; 1..6 = a storage GUI of that many rows (forklift/truck)
+    public double maxHealth;    // hit points; the car takes damage when shot or punched
+    public String wreckModel;   // custom_model_data string swapped in when the car is destroyed
     /** Seat positions in model space, driver first - filled from the model
      *  file's "driverseat"/"seat*" elements when one exists (see CarRegistry). */
     public java.util.List<double[]> seatOffsets = java.util.List.of();
@@ -38,6 +41,9 @@ public final class CarType {
         this.offsetX = 0;
         this.offsetY = 0.5;
         this.offsetZ = 0;
+        this.cargoRows = 0;
+        this.maxHealth = 100.0;
+        this.wreckModel = this.model + "_wreck";
     }
 
     public static CarType load(String id, ConfigurationSection section) {
@@ -54,6 +60,9 @@ public final class CarType {
         type.offsetY = section.getDouble("offset-y", type.offsetY);
         type.offsetZ = section.getDouble("offset-z", type.offsetZ);
         type.seatYAdjust = section.getDouble("seat-y-adjust", 0);
+        type.cargoRows = Math.max(0, Math.min(6, section.getInt("cargo-rows", 0)));
+        type.maxHealth = Math.max(1.0, section.getDouble("max-health", type.maxHealth));
+        type.wreckModel = section.getString("wreck-model", type.model + "_wreck");
         return type;
     }
 
@@ -70,5 +79,8 @@ public final class CarType {
         section.set("offset-y", offsetY);
         section.set("offset-z", offsetZ);
         section.set("seat-y-adjust", seatYAdjust);
+        section.set("cargo-rows", cargoRows);
+        section.set("max-health", maxHealth);
+        section.set("wreck-model", wreckModel);
     }
 }
