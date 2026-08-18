@@ -24,6 +24,11 @@ public final class CarType {
     public int cargoRows;       // 0 = no cargo hold; 1..6 = a storage GUI of that many rows (forklift/truck)
     public double maxHealth;    // hit points; the car takes damage when shot or punched
     public String wreckModel;   // custom_model_data string swapped in when the car is destroyed
+    /** Visible cargo boxes on the vehicle: one [x,y,z] offset each. Each shows as a barrel/crate display
+     *  that rides the car; edit with /car edit &lt;id&gt; cargo-box &lt;index&gt; &lt;x&gt; &lt;y&gt; &lt;z&gt;. */
+    public java.util.List<double[]> cargoBoxes = new java.util.ArrayList<>();
+    public String cargoBoxModel; // "" = plain BARREL block display; otherwise a custom_model_data string (e.g. the 1079 crate)
+    public double cargoBoxScale; // display scale of each cargo box
     /** Seat positions in model space, driver first - filled from the model
      *  file's "driverseat"/"seat*" elements when one exists (see CarRegistry). */
     public java.util.List<double[]> seatOffsets = java.util.List.of();
@@ -44,6 +49,8 @@ public final class CarType {
         this.cargoRows = 0;
         this.maxHealth = 100.0;
         this.wreckModel = this.model + "_wreck";
+        this.cargoBoxModel = "";
+        this.cargoBoxScale = 0.6;
     }
 
     public static CarType load(String id, ConfigurationSection section) {
@@ -63,6 +70,15 @@ public final class CarType {
         type.cargoRows = Math.max(0, Math.min(6, section.getInt("cargo-rows", 0)));
         type.maxHealth = Math.max(1.0, section.getDouble("max-health", type.maxHealth));
         type.wreckModel = section.getString("wreck-model", type.model + "_wreck");
+        type.cargoBoxModel = section.getString("cargo-box-model", "");
+        type.cargoBoxScale = section.getDouble("cargo-box-scale", 0.6);
+        type.cargoBoxes = new java.util.ArrayList<>();
+        for (String pos : section.getStringList("cargo-boxes")) {
+            String[] p = pos.trim().split("[ ,]+");
+            if (p.length == 3) try {
+                type.cargoBoxes.add(new double[]{Double.parseDouble(p[0]), Double.parseDouble(p[1]), Double.parseDouble(p[2])});
+            } catch (NumberFormatException ignored) { }
+        }
         return type;
     }
 
@@ -82,5 +98,10 @@ public final class CarType {
         section.set("cargo-rows", cargoRows);
         section.set("max-health", maxHealth);
         section.set("wreck-model", wreckModel);
+        section.set("cargo-box-model", cargoBoxModel);
+        section.set("cargo-box-scale", cargoBoxScale);
+        java.util.List<String> boxes = new java.util.ArrayList<>();
+        for (double[] b : cargoBoxes) boxes.add(b[0] + " " + b[1] + " " + b[2]);
+        section.set("cargo-boxes", boxes);
     }
 }

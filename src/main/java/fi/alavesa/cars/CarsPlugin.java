@@ -141,6 +141,51 @@ public final class CarsPlugin extends JavaPlugin {
         for (int seat = 0; seat < seatCount; seat++) {
             spawnSeat(base, seat);
         }
+        spawnCargoBoxes(base, type);
+    }
+
+    /** Spawn one visible cargo box (barrel / crate) per configured position, riding the car. */
+    public void spawnCargoBoxes(Pig base, CarType type) {
+        for (double[] box : type.cargoBoxes) {
+            org.bukkit.entity.Display disp;
+            Transformation xf = new Transformation(
+                new Vector3f((float) box[0], (float) box[1], (float) box[2]),
+                new AxisAngle4f(0, 0, 0, 1),
+                new Vector3f((float) type.cargoBoxScale, (float) type.cargoBoxScale, (float) type.cargoBoxScale),
+                new AxisAngle4f(0, 0, 0, 1));
+            if (type.cargoBoxModel == null || type.cargoBoxModel.isEmpty()) {
+                disp = base.getWorld().spawn(base.getLocation(), org.bukkit.entity.BlockDisplay.class, d -> {
+                    d.setBlock(Material.BARREL.createBlockData());
+                    d.setPersistent(true); d.setTeleportDuration(1); d.setTransformation(xf);
+                    d.addScoreboardTag(DriveTask.TAG_PART); d.addScoreboardTag(TAG_CARGOBOX);
+                });
+            } else {
+                disp = base.getWorld().spawn(base.getLocation(), ItemDisplay.class, d -> {
+                    ItemStack it = new ItemStack(Material.BARREL);
+                    ItemMeta m = it.getItemMeta();
+                    CustomModelDataComponent c = m.getCustomModelDataComponent();
+                    c.setStrings(List.of(type.cargoBoxModel));
+                    m.setCustomModelDataComponent(c);
+                    it.setItemMeta(m);
+                    d.setItemStack(it);
+                    d.setPersistent(true); d.setTeleportDuration(1); d.setTransformation(xf);
+                    d.addScoreboardTag(DriveTask.TAG_PART); d.addScoreboardTag(TAG_CARGOBOX);
+                });
+            }
+            base.addPassenger(disp);
+        }
+    }
+
+    public static final String TAG_CARGOBOX = "cars.cargobox";
+
+    /** Despawn a car's cargo boxes (used when re-applying positions or wrecking). */
+    public void clearCargoBoxes(Pig base) {
+        for (Entity p : new java.util.ArrayList<>(base.getPassengers())) {
+            if (p.getScoreboardTags().contains(TAG_CARGOBOX)) p.remove();
+        }
+        for (Entity p : base.getWorld().getNearbyEntities(base.getLocation(), 3, 3, 3)) {
+            if (p.getScoreboardTags().contains(TAG_CARGOBOX) && p.getVehicle() == base) p.remove();
+        }
     }
 
     /** One seat stand; also used to retrofit a driver's seat onto old cars. */
@@ -218,8 +263,9 @@ public final class CarsPlugin extends JavaPlugin {
             seat.remove();
         }
         base.removeScoreboardTag(DriveTask.TAG_CAR);   // DriveTask stops ticking it; no throttle/steering
-        // drop the cargo hold on the ground so it isn't lost inside an unusable wreck
+        // drop the cargo hold on the ground so it isn't lost inside an unusable wreck, and remove the boxes
         dropCargo(base);
+        clearCargoBoxes(base);
         // swap the body model to the wreck variant
         ItemDisplay body = bodyOf(base);
         if (body != null && type != null) {
@@ -297,6 +343,22 @@ public final class CarsPlugin extends JavaPlugin {
                 if (args.length < 4) return usage(sender);
                 CarType type = registry.get(args[1]);
                 if (type == null) return error(sender, "No vehicle type '" + args[1] + "'.");
+                // cargo-box takes an index + x y z, so it's handled before the single-value properties.
+                if (args[2].equalsIgnoreCase("cargo-box")) {
+                    if (args.length < 7) return error(sender,
+                        "/car edit " + type.id + " cargo-box <index> <x> <y> <z>   (index 0,1,2... = each box on the car)");
+                    try {
+                        int idx = Math.max(0, Integer.parseInt(args[3]));
+                        double bx = Double.parseDouble(args[4]), by = Double.parseDouble(args[5]), bz = Double.parseDouble(args[6]);
+                        while (type.cargoBoxes.size() <= idx) type.cargoBoxes.add(new double[]{0, 0, 0});
+                        type.cargoBoxes.set(idx, new double[]{bx, by, bz});
+                    } catch (NumberFormatException e) { return error(sender, "index and x y z must be numbers."); }
+                    registry.save();
+                    sender.sendMessage(Component.text(type.id + " cargo box #" + args[3] + " -> " + args[4] + " "
+                        + args[5] + " " + args[6] + " (" + type.cargoBoxes.size() + " box(es); respawn cars to apply)",
+                        NamedTextColor.AQUA));
+                    return true;
+                }
                 String value = String.join(" ", java.util.Arrays.copyOfRange(args, 3, args.length));
                 try {
                     switch (args[2].toLowerCase(Locale.ROOT)) {
@@ -315,8 +377,11 @@ public final class CarsPlugin extends JavaPlugin {
                         case "cargo-rows" -> type.cargoRows = Math.max(0, Math.min(6, Integer.parseInt(value)));
                         case "max-health" -> type.maxHealth = Math.max(1.0, Double.parseDouble(value));
                         case "wreck-model" -> type.wreckModel = value;
+                        case "cargo-box-model" -> type.cargoBoxModel = value.equalsIgnoreCase("none") ? "" : value;
+                        case "cargo-box-scale" -> type.cargoBoxScale = Double.parseDouble(value);
+                        case "cargo-box-clear" -> type.cargoBoxes.clear();
                         default -> { return error(sender,
-                            "Properties: name, model, max-speed, acceleration, turn-rate, scale, sound, seats, offset-x/y/z, seat-y-adjust, cargo-rows, max-health, wreck-model"); }
+                            "Properties: name, model, max-speed, acceleration, turn-rate, scale, sound, seats, offset-x/y/z, seat-y-adjust, cargo-rows, max-health, wreck-model, cargo-box <i> <x> <y> <z>, cargo-box-model, cargo-box-scale, cargo-box-clear"); }
                     }
                 } catch (NumberFormatException e) {
                     return error(sender, "That property takes a number.");
@@ -463,7 +528,8 @@ public final class CarsPlugin extends JavaPlugin {
                 if (args[0].equalsIgnoreCase("edit")) {
                     yield filter(Stream.of("name", "model", "max-speed", "acceleration", "turn-rate",
                         "scale", "sound", "seats", "offset-x", "offset-y", "offset-z", "seat-y-adjust",
-                        "cargo-rows", "max-health", "wreck-model"), args[2]);
+                        "cargo-rows", "max-health", "wreck-model", "cargo-box", "cargo-box-model",
+                        "cargo-box-scale", "cargo-box-clear"), args[2]);
                 }
                 if ((args[0].equalsIgnoreCase("monorail") || args[0].equalsIgnoreCase("rail"))
                     && Stream.of("node", "build", "cart", "remove").anyMatch(s -> s.equalsIgnoreCase(args[1]))) {
