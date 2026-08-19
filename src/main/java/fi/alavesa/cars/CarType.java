@@ -29,6 +29,7 @@ public final class CarType {
     public java.util.List<double[]> cargoBoxes = new java.util.ArrayList<>();
     public String cargoBoxModel; // "" = plain BARREL block display; otherwise a custom_model_data string (e.g. the 1079 crate)
     public double cargoBoxScale; // display scale of each cargo box
+    public boolean drift;        // whether this car can drift (handbrake/sharp-turn slides); false = always full grip
     /** Seat positions in model space, driver first - filled from the model
      *  file's "driverseat"/"seat*" elements when one exists (see CarRegistry). */
     public java.util.List<double[]> seatOffsets = java.util.List.of();
@@ -51,6 +52,7 @@ public final class CarType {
         this.wreckModel = this.model + "_wreck";
         this.cargoBoxModel = "";
         this.cargoBoxScale = 0.6;
+        this.drift = true;
     }
 
     public static CarType load(String id, ConfigurationSection section) {
@@ -72,6 +74,7 @@ public final class CarType {
         type.wreckModel = section.getString("wreck-model", type.model + "_wreck");
         type.cargoBoxModel = section.getString("cargo-box-model", "");
         type.cargoBoxScale = section.getDouble("cargo-box-scale", 0.6);
+        type.drift = section.getBoolean("drift", true);
         type.cargoBoxes = new java.util.ArrayList<>();
         for (String pos : section.getStringList("cargo-boxes")) {
             String[] p = pos.trim().split("[ ,]+");
@@ -100,6 +103,7 @@ public final class CarType {
         section.set("wreck-model", wreckModel);
         section.set("cargo-box-model", cargoBoxModel);
         section.set("cargo-box-scale", cargoBoxScale);
+        section.set("drift", drift);
         java.util.List<String> boxes = new java.util.ArrayList<>();
         for (double[] b : cargoBoxes) boxes.add(b[0] + " " + b[1] + " " + b[2]);
         section.set("cargo-boxes", boxes);

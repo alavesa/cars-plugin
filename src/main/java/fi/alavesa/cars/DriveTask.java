@@ -250,7 +250,7 @@ public final class DriveTask implements Runnable {
         // enough that grip can't hold the tail. Handbrake is the reliable,
         // discoverable trigger; the sharp-turn path lets it happen naturally too.
         boolean sharpDrift = Math.abs(speed) > DRIFT_SPEED && Math.abs(gap) > DRIFT_ANGLE;
-        boolean drifting = Math.abs(speed) > DRIFT_SPEED && (handbrake || sharpDrift);
+        boolean drifting = type.drift && Math.abs(speed) > DRIFT_SPEED && (handbrake || sharpDrift);
         // reversing points the slide the other way so the tail behaves
         double catchUp = drifting ? DRIFT_GRIP : GRIP_NORMAL;
         vh += (float) (gap * catchUp);

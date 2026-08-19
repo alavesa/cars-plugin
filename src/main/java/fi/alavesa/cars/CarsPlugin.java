@@ -380,6 +380,7 @@ public final class CarsPlugin extends JavaPlugin {
                         case "cargo-box-model" -> type.cargoBoxModel = value.equalsIgnoreCase("none") ? "" : value;
                         case "cargo-box-scale" -> type.cargoBoxScale = Double.parseDouble(value);
                         case "cargo-box-clear" -> type.cargoBoxes.clear();
+                        case "drift" -> type.drift = value.equalsIgnoreCase("true") || value.equals("1");
                         default -> { return error(sender,
                             "Properties: name, model, max-speed, acceleration, turn-rate, scale, sound, seats, offset-x/y/z, seat-y-adjust, cargo-rows, max-health, wreck-model, cargo-box <i> <x> <y> <z>, cargo-box-model, cargo-box-scale, cargo-box-clear"); }
                     }
@@ -529,7 +530,7 @@ public final class CarsPlugin extends JavaPlugin {
                     yield filter(Stream.of("name", "model", "max-speed", "acceleration", "turn-rate",
                         "scale", "sound", "seats", "offset-x", "offset-y", "offset-z", "seat-y-adjust",
                         "cargo-rows", "max-health", "wreck-model", "cargo-box", "cargo-box-model",
-                        "cargo-box-scale", "cargo-box-clear"), args[2]);
+                        "cargo-box-scale", "cargo-box-clear", "drift"), args[2]);
                 }
                 if ((args[0].equalsIgnoreCase("monorail") || args[0].equalsIgnoreCase("rail"))
                     && Stream.of("node", "build", "cart", "remove").anyMatch(s -> s.equalsIgnoreCase(args[1]))) {
