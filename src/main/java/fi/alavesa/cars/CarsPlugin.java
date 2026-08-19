@@ -41,6 +41,7 @@ public final class CarsPlugin extends JavaPlugin {
     private NamespacedKey wreckedKey;   // 1 once destroyed, on the base Pig
     private NamespacedKey attackKey;    // last-seen attack timestamp, on the Interaction hitbox
     private NamespacedKey winchCountKey;// how many barrels have been winched onto a car, on the base Pig
+    private NamespacedKey boxShadyKey;  // a cargo box's shady-barrel origin key, on the BlockDisplay box
     private WinchManager winch;
 
     @Override
@@ -53,6 +54,7 @@ public final class CarsPlugin extends JavaPlugin {
         wreckedKey = new NamespacedKey(this, "wrecked");
         attackKey = new NamespacedKey(this, "last_attack");
         winchCountKey = new NamespacedKey(this, "winch_count");
+        boxShadyKey = new NamespacedKey(this, "box_shady");
         getConfig().addDefault("seat-y-adjust", -0.72);
         getConfig().addDefault("monorail.speed", 0.3);
         getConfig().addDefault("monorail.arrive", 0.7);
@@ -316,8 +318,12 @@ public final class CarsPlugin extends JavaPlugin {
         return best;
     }
 
-    /** Land a winched barrel on a car as a stacked cargo box that rides along. */
-    public void addWinchedCargo(Pig base) {
+    /** A cargo box's shady-barrel origin key (if the winched barrel was a Terminal delivery barrel). */
+    public NamespacedKey boxShadyKey() { return boxShadyKey; }
+
+    /** Land a winched barrel on a car as a stacked cargo box that rides along. Carries the shady-barrel
+     *  origin key (or null) so the Terminal delivery marking can follow the barrel when it's dropped again. */
+    public void addWinchedCargo(Pig base, String shadyOriginKey) {
         int count = base.getPersistentDataContainer().getOrDefault(winchCountKey, PersistentDataType.INTEGER, 0);
         CarType type = typeOf(base);
         double scale = type != null ? type.cargoBoxScale : 0.6;
@@ -331,6 +337,7 @@ public final class CarsPlugin extends JavaPlugin {
             d.setBlock(Material.BARREL.createBlockData());
             d.setPersistent(true); d.setTeleportDuration(1); d.setTransformation(xf);
             d.addScoreboardTag(DriveTask.TAG_PART); d.addScoreboardTag(TAG_CARGOBOX);
+            if (shadyOriginKey != null) d.getPersistentDataContainer().set(boxShadyKey, PersistentDataType.STRING, shadyOriginKey);
         });
         base.addPassenger(box);
         base.getPersistentDataContainer().set(winchCountKey, PersistentDataType.INTEGER, count + 1);

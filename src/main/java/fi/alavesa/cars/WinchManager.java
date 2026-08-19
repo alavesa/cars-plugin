@@ -112,10 +112,36 @@ public final class WinchManager implements Listener, Runnable {
             stow(p);   // left-click cancels the winch
             return;
         }
-        if (event.getAction() == Action.RIGHT_CLICK_BLOCK && event.getClickedBlock() != null
-            && event.getClickedBlock().getType() == Material.BARREL) {
+        if (event.getAction() == Action.RIGHT_CLICK_BLOCK && event.getClickedBlock() != null) {
             event.setCancelled(true);
-            reelIn(p, event.getClickedBlock());
+            if (event.getClickedBlock().getType() == Material.BARREL) {
+                reelIn(p, event.getClickedBlock());          // load: reel this barrel onto a car
+            } else {
+                unload(p, event.getClickedBlock().getRelative(event.getBlockFace()));  // unload: drop a barrel here
+            }
+        }
+    }
+
+    /** Drop a barrel from the nearest cargo car back into the world at {@code where}. If the box carried a
+     *  Terminal shady-barrel registration, it's relocated here so deliveries follow the barrel. */
+    private void unload(Player p, Block where) {
+        if (!where.getType().isAir() && !where.isReplaceable()) {
+            Msg.actionbar(p, Component.text("No room to set the barrel down there.", NamedTextColor.GRAY)); return;
+        }
+        Pig car = plugin.nearestCargoCar(p.getLocation(), 8);
+        if (car == null) { Msg.actionbar(p, Component.text("No cargo vehicle nearby.", NamedTextColor.GRAY)); return; }
+        BlockDisplay box = null;
+        for (org.bukkit.entity.Entity e : car.getPassengers()) {
+            if (e instanceof BlockDisplay bd && bd.getScoreboardTags().contains(CarsPlugin.TAG_CARGOBOX)) box = bd;   // last one on
+        }
+        if (box == null) { Msg.actionbar(p, Component.text("That vehicle has no barrels to unload.", NamedTextColor.GRAY)); return; }
+        String shadyKey = box.getPersistentDataContainer().get(plugin.boxShadyKey(), PersistentDataType.STRING);
+        box.remove();
+        where.setType(Material.BARREL);
+        where.getWorld().playSound(where.getLocation(), org.bukkit.Sound.BLOCK_CHAIN_PLACE, 0.9f, 1.0f);
+        if (shadyKey != null) {
+            boolean moved = ShadyBridge.relocate(shadyKey, where.getLocation());
+            if (moved) Msg.actionbar(p, Component.text("Delivery barrel relocated - shady app deliveries follow it here.", NamedTextColor.GRAY));
         }
     }
 
@@ -143,6 +169,9 @@ public final class WinchManager implements Listener, Runnable {
     public void reelBlockToCar(Block barrel, Pig car) {
         if (barrel.getType() != Material.BARREL) return;
         Location from = barrel.getLocation().toCenterLocation();
+        // If this barrel is a Terminal shady-app delivery spot, carry its registration on the box so it can
+        // be relocated when the barrel is dropped again - the shady app keeps working after transport.
+        final String shadyKey = ShadyBridge.barrelKeyAt(barrel.getLocation());
         barrel.setType(Material.AIR);   // the world barrel is consumed; it now rides the car
         BlockDisplay fly = from.getWorld().spawn(from, BlockDisplay.class, d -> {
             d.setBlock(Material.BARREL.createBlockData());
@@ -158,7 +187,7 @@ public final class WinchManager implements Listener, Runnable {
             t[0]++;
             if (fly.isDead() || car.isDead() || plugin.isWrecked(car) || t[0] > 20) {
                 fly.remove();
-                if (!car.isDead() && !plugin.isWrecked(car)) plugin.addWinchedCargo(car);
+                if (!car.isDead() && !plugin.isWrecked(car)) plugin.addWinchedCargo(car, shadyKey);
                 task[0].cancel();
                 return;
             }
