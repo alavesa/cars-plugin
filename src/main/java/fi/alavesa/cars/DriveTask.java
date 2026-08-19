@@ -108,9 +108,13 @@ public final class DriveTask implements Runnable {
     }
     private int tick;
 
+    private WinchManager winch;
+
     public DriveTask(CarsPlugin plugin) {
         this.plugin = plugin;
     }
+
+    public void setWinch(WinchManager winch) { this.winch = winch; }
 
     public void input(Player player, Input input) {
         inputs.put(player.getUniqueId(), input);
@@ -134,10 +138,23 @@ public final class DriveTask implements Runnable {
                 if (pig.getScoreboardTags().contains(TAG_CAR)) {
                     tickCar(pig);
                     pollPunch(pig);
+                    if (tick % 20 == 0) forkliftPickup(pig);   // ~1s scan for barrels to auto-load
                 }
             }
         }
         if (tick % 100 == 0) sweepOrphans();
+    }
+
+    /** A FORKLIFT auto-reels a barrel it drives up to (no winch needed) onto its own bed. */
+    private void forkliftPickup(Pig base) {
+        if (winch == null || plugin.isWrecked(base)) return;
+        CarType type = plugin.typeOf(base);
+        if (type == null || !type.forklift) return;
+        Location c = base.getLocation();
+        for (int dx = -2; dx <= 2; dx++) for (int dz = -2; dz <= 2; dz++) for (int dy = -1; dy <= 1; dy++) {
+            org.bukkit.block.Block b = c.clone().add(dx, dy, dz).getBlock();
+            if (b.getType() == org.bukkit.Material.BARREL) { winch.reelBlockToCar(b, base); return; }  // one per scan
+        }
     }
 
     /** Detect a left-click PUNCH on the car's hitbox (Interaction entities don't fire damage events, so we

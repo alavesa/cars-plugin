@@ -40,6 +40,8 @@ public final class CarsPlugin extends JavaPlugin {
     private NamespacedKey cargoKey;     // serialized cargo contents, on the base Pig
     private NamespacedKey wreckedKey;   // 1 once destroyed, on the base Pig
     private NamespacedKey attackKey;    // last-seen attack timestamp, on the Interaction hitbox
+    private NamespacedKey winchCountKey;// how many barrels have been winched onto a car, on the base Pig
+    private WinchManager winch;
 
     @Override
     public void onEnable() {
@@ -50,6 +52,7 @@ public final class CarsPlugin extends JavaPlugin {
         cargoKey = new NamespacedKey(this, "cargo");
         wreckedKey = new NamespacedKey(this, "wrecked");
         attackKey = new NamespacedKey(this, "last_attack");
+        winchCountKey = new NamespacedKey(this, "winch_count");
         getConfig().addDefault("seat-y-adjust", -0.72);
         getConfig().addDefault("monorail.speed", 0.3);
         getConfig().addDefault("monorail.arrive", 0.7);
@@ -66,10 +69,14 @@ public final class CarsPlugin extends JavaPlugin {
         task = new DriveTask(this);
         monorail = new MonorailManager(this);
         monoTask = new MonorailTask(this, monorail);
+        winch = new WinchManager(this);
+        task.setWinch(winch);
         getServer().getPluginManager().registerEvents(new CarListener(this, task), this);
         getServer().getPluginManager().registerEvents(new MonorailListener(this, monorail), this);
+        getServer().getPluginManager().registerEvents(winch, this);
         getServer().getScheduler().runTaskTimer(this, task, 20L, 1L);
         getServer().getScheduler().runTaskTimer(this, monoTask, 20L, 1L);
+        getServer().getScheduler().runTaskTimer(this, winch, 20L, 1L);   // red-hose ray each tick
         getLogger().info("Cars enabled - " + registry.all().size() + " vehicle type(s), "
             + monorail.all().size() + " monorail line(s)");
     }
@@ -292,6 +299,44 @@ public final class CarsPlugin extends JavaPlugin {
         base.getWorld().spawnParticle(org.bukkit.Particle.LARGE_SMOKE, base.getLocation().add(0, 1, 0), 30, 0.8, 0.6, 0.8, 0.05);
     }
 
+    // ----------------------------------------------------------------- winch
+
+    public WinchManager winch() { return winch; }
+
+    /** Nearest non-wrecked cargo-capable car (cargo-rows > 0 or a forklift) within radius, or null. */
+    public Pig nearestCargoCar(Location at, double radius) {
+        Pig best = null; double bestSq = radius * radius;
+        for (Entity e : at.getWorld().getNearbyEntities(at, radius, radius, radius)) {
+            if (!(e instanceof Pig pig) || !pig.getScoreboardTags().contains(DriveTask.TAG_CAR) || isWrecked(pig)) continue;
+            CarType type = typeOf(pig);
+            if (type == null || (type.cargoRows <= 0 && !type.forklift)) continue;
+            double d = pig.getLocation().distanceSquared(at);
+            if (d < bestSq) { bestSq = d; best = pig; }
+        }
+        return best;
+    }
+
+    /** Land a winched barrel on a car as a stacked cargo box that rides along. */
+    public void addWinchedCargo(Pig base) {
+        int count = base.getPersistentDataContainer().getOrDefault(winchCountKey, PersistentDataType.INTEGER, 0);
+        CarType type = typeOf(base);
+        double scale = type != null ? type.cargoBoxScale : 0.6;
+        // simple stack along the bed: two per row, rising as it fills
+        double bx = (count % 2 == 0 ? -0.4 : 0.4);
+        double by = 0.7 + (count / 4) * 0.7;
+        double bz = -0.3 + ((count / 2) % 2) * 0.7;
+        Transformation xf = new Transformation(new Vector3f((float) bx, (float) by, (float) bz),
+            new AxisAngle4f(), new Vector3f((float) scale, (float) scale, (float) scale), new AxisAngle4f());
+        org.bukkit.entity.BlockDisplay box = base.getWorld().spawn(base.getLocation(), org.bukkit.entity.BlockDisplay.class, d -> {
+            d.setBlock(Material.BARREL.createBlockData());
+            d.setPersistent(true); d.setTeleportDuration(1); d.setTransformation(xf);
+            d.addScoreboardTag(DriveTask.TAG_PART); d.addScoreboardTag(TAG_CARGOBOX);
+        });
+        base.addPassenger(box);
+        base.getPersistentDataContainer().set(winchCountKey, PersistentDataType.INTEGER, count + 1);
+        base.getWorld().playSound(base.getLocation(), org.bukkit.Sound.BLOCK_CHAIN_PLACE, 1.0f, 0.9f);
+    }
+
     // ----------------------------------------------------------------- cargo
 
     /** Open a car's cargo hold, loading its saved contents. */
@@ -392,6 +437,7 @@ public final class CarsPlugin extends JavaPlugin {
                         case "cargo-box-scale" -> type.cargoBoxScale = Double.parseDouble(value);
                         case "cargo-box-clear" -> type.cargoBoxes.clear();
                         case "drift" -> type.drift = value.equalsIgnoreCase("true") || value.equals("1");
+                        case "forklift" -> type.forklift = value.equalsIgnoreCase("true") || value.equals("1");
                         default -> { return error(sender,
                             "Properties: name, model, max-speed, acceleration, turn-rate, scale, sound, seats, offset-x/y/z, seat-y-adjust, cargo-rows, max-health, wreck-model, cargo-box <i> <x> <y> <z>, cargo-box-model, cargo-box-scale, cargo-box-clear"); }
                     }
@@ -421,6 +467,11 @@ public final class CarsPlugin extends JavaPlugin {
                 spawnCar(type, player.getLocation());
                 sender.sendMessage(Component.text(type.name + " delivered. Right-click to get in.",
                     NamedTextColor.AQUA));
+                return true;
+            }
+            case "winch" -> {
+                if (!(sender instanceof Player player)) return error(sender, "Players only.");
+                winch.toggle(player);   // take the winch from a nearby cargo vehicle (or stow it)
                 return true;
             }
             case "reload" -> {
@@ -530,7 +581,7 @@ public final class CarsPlugin extends JavaPlugin {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         return switch (args.length) {
-            case 1 -> filter(Stream.of("create", "edit", "list", "spawn", "remove", "reload", "monorail"), args[0]);
+            case 1 -> filter(Stream.of("create", "edit", "list", "spawn", "winch", "remove", "reload", "monorail"), args[0]);
             case 2 -> switch (args[0].toLowerCase(Locale.ROOT)) {
                 case "edit", "spawn" -> filter(registry.all().keySet().stream(), args[1]);
                 case "monorail", "rail" -> filter(Stream.of("line", "node", "build", "cart", "list", "remove", "scrap"), args[1]);
@@ -541,7 +592,7 @@ public final class CarsPlugin extends JavaPlugin {
                     yield filter(Stream.of("name", "model", "max-speed", "acceleration", "turn-rate",
                         "scale", "sound", "seats", "offset-x", "offset-y", "offset-z", "seat-y-adjust",
                         "cargo-rows", "max-health", "wreck-model", "cargo-box", "cargo-box-model",
-                        "cargo-box-scale", "cargo-box-clear", "drift"), args[2]);
+                        "cargo-box-scale", "cargo-box-clear", "drift", "forklift"), args[2]);
                 }
                 if ((args[0].equalsIgnoreCase("monorail") || args[0].equalsIgnoreCase("rail"))
                     && Stream.of("node", "build", "cart", "remove").anyMatch(s -> s.equalsIgnoreCase(args[1]))) {

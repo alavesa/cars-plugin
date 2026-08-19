@@ -34,6 +34,13 @@ public final class CarRegistry {
             jeep.name = "Facility Jeep";
             jeep.seats = 4;
             types.put(jeep.id, jeep);
+            CarType forklift = new CarType("forklift");   // built-in cargo hauler that auto-loads barrels
+            forklift.name = "Forklift";
+            forklift.seats = 1;
+            forklift.maxSpeed = 5.0;
+            forklift.cargoRows = 3;      // a small-items hold too
+            forklift.forklift = true;    // drives up to a barrel and reels it aboard on its own
+            types.put(forklift.id, forklift);
             save();
         } else {
             YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
