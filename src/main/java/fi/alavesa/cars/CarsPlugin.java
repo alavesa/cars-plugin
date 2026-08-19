@@ -99,7 +99,13 @@ public final class CarsPlugin extends JavaPlugin {
             pig.getAttribute(Attribute.STEP_HEIGHT).setBaseValue(1.1);
             pig.addScoreboardTag(DriveTask.TAG_CAR);
             pig.getPersistentDataContainer().set(typeKey, PersistentDataType.STRING, type.id);
-            pig.getPersistentDataContainer().set(healthKey, PersistentDataType.DOUBLE, type.maxHealth);
+            // REAL, hidden Minecraft health: the pig (the only living car part, and what gun raycasts hit)
+            // carries the car's hit points. A pig shows no health bar, so it stays invisible. Knockback is
+            // resisted so a hit never shoves the car; environmental damage is cancelled in CarListener.
+            double hp = Math.max(1.0, Math.min(1024.0, type.maxHealth));
+            pig.getAttribute(Attribute.MAX_HEALTH).setBaseValue(hp);
+            pig.getAttribute(Attribute.KNOCKBACK_RESISTANCE).setBaseValue(1.0);
+            pig.setHealth(hp);
         });
         // AI must stay ON (NoAI freezes velocity processing entirely), but
         // aware=false stops all of the pig's own decision-making - and unlike
@@ -228,27 +234,32 @@ public final class CarsPlugin extends JavaPlugin {
         return null;
     }
 
-    /** Apply damage to a car; wreck it when its health runs out. No-op on an already-wrecked car. */
+    /** Programmatic car damage (used by the punch poll): routes through the pig's REAL health so it lands
+     *  exactly like a gun shot and is handled once, in CarListener.onDamage. */
     public void damageCar(Pig base, double amount, Player source) {
-        if (isWrecked(base) || amount <= 0) return;
+        if (isWrecked(base) || amount <= 0 || base.isDead()) return;
+        if (source != null) base.damage(amount, source);
+        else base.damage(amount);
+    }
+
+    /** Feedback + wreck decision for a hit that reached the car's real health. Returns true if the hit was
+     *  fatal (and the car has been wrecked) so the caller can cancel the vanilla death. */
+    public boolean onCarHealthDamage(Pig base, double amount, Player source) {
+        if (isWrecked(base)) return true;   // a wreck absorbs nothing more
         CarType type = typeOf(base);
-        double max = type != null ? type.maxHealth : 100.0;
-        double health = base.getPersistentDataContainer().getOrDefault(healthKey, PersistentDataType.DOUBLE, max);
-        health -= amount;
+        double max = type != null ? type.maxHealth : base.getAttribute(Attribute.MAX_HEALTH).getValue();
+        double remaining = base.getHealth() - amount;
         base.getWorld().playSound(base.getLocation(), org.bukkit.Sound.ENTITY_IRON_GOLEM_DAMAGE, 0.7f, 1.4f);
         base.getWorld().spawnParticle(org.bukkit.Particle.CRIT, base.getLocation().add(0, 1, 0), 8, 0.6, 0.4, 0.6, 0.1);
-        if (health <= 0) {
-            wreckCar(base);
-        } else {
-            base.getPersistentDataContainer().set(healthKey, PersistentDataType.DOUBLE, health);
-            if (health <= max * 0.3) {
-                base.getWorld().spawnParticle(org.bukkit.Particle.SMOKE, base.getLocation().add(0, 1, 0), 6, 0.5, 0.3, 0.5, 0.02);
-            }
-            if (source != null) {
-                Msg.actionbar(source, Component.text("Car health: " + (int) Math.ceil(health) + " / "
-                    + (int) max, health <= max * 0.3 ? NamedTextColor.RED : NamedTextColor.YELLOW));
-            }
+        if (remaining <= 0) { wreckCar(base); return true; }
+        if (remaining <= max * 0.3) {
+            base.getWorld().spawnParticle(org.bukkit.Particle.SMOKE, base.getLocation().add(0, 1, 0), 6, 0.5, 0.3, 0.5, 0.02);
         }
+        if (source != null) {
+            Msg.actionbar(source, Component.text("Car health: " + (int) Math.ceil(remaining) + " / " + (int) max,
+                remaining <= max * 0.3 ? NamedTextColor.RED : NamedTextColor.YELLOW));
+        }
+        return false;
     }
 
     /** Turn a car into an inert wreck: same model, swapped to the wreck texture, undrivable, no seats. */

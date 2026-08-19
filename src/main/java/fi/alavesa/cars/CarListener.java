@@ -118,24 +118,56 @@ public final class CarListener implements Listener {
         }
     }
 
-    /** Cars take damage when shot or punched: convert it to car health instead of vanilla damage.
-     *  (Punches on the Interaction hitbox are also caught by the attack poll in DriveTask.) */
-    @EventHandler
+    /** Cars have REAL (hidden) health on the base pig. Gun raycasts hit the pig directly (it's the only
+     *  living car part); punches on the hitbox are fed in via the attack poll (DriveTask). Combat damage
+     *  lowers the real health and wrecks the car at 0; environmental damage and damage to the non-living
+     *  parts (display/hitbox/seats) is cancelled so only shooting/punching hurts the car. */
+    @EventHandler(ignoreCancelled = true)
     public void onDamage(EntityDamageEvent event) {
         var tags = event.getEntity().getScoreboardTags();
-        boolean carPart = tags.contains(DriveTask.TAG_CAR) || tags.contains(DriveTask.TAG_PART)
-            || tags.contains(DriveTask.TAG_SEAT);
-        if (!carPart) return;
-        event.setCancelled(true);                 // never let vanilla hurt/knock the car entities
-        Pig base = carBaseOf(event.getEntity());
-        if (base == null) return;
-        Player source = null;
-        if (event instanceof org.bukkit.event.entity.EntityDamageByEntityEvent byEntity) {
-            if (byEntity.getDamager() instanceof Player p) source = p;
-            else if (byEntity.getDamager() instanceof org.bukkit.entity.Projectile proj
-                && proj.getShooter() instanceof Player p) source = p;
+        // The living base pig = the health pool.
+        if (event.getEntity() instanceof Pig pig && tags.contains(DriveTask.TAG_CAR)) {
+            if (plugin.isWrecked(pig)) { event.setCancelled(true); return; }
+            if (!isCombat(event.getCause())) { event.setCancelled(true); return; }   // immune to fall/fire/drown/etc.
+            Player source = damagerOf(event);
+            boolean fatal = plugin.onCarHealthDamage(pig, event.getFinalDamage(), source);
+            if (fatal) event.setCancelled(true);   // we wreck it ourselves; don't let vanilla "kill" the pig
+            return;
         }
-        plugin.damageCar(base, event.getFinalDamage(), source);
+        // The display / hitbox / seats are cosmetic - never let anything hurt or knock them.
+        if (tags.contains(DriveTask.TAG_PART) || tags.contains(DriveTask.TAG_SEAT)) event.setCancelled(true);
+    }
+
+    private static boolean isCombat(EntityDamageEvent.DamageCause c) {
+        return c == EntityDamageEvent.DamageCause.ENTITY_ATTACK
+            || c == EntityDamageEvent.DamageCause.ENTITY_SWEEP_ATTACK
+            || c == EntityDamageEvent.DamageCause.PROJECTILE
+            || c == EntityDamageEvent.DamageCause.CUSTOM;   // gun bypass-pvp path lands as CUSTOM/source-less
+    }
+
+    private static Player damagerOf(EntityDamageEvent event) {
+        if (event instanceof org.bukkit.event.entity.EntityDamageByEntityEvent byEntity) {
+            if (byEntity.getDamager() instanceof Player p) return p;
+            if (byEntity.getDamager() instanceof org.bukkit.entity.Projectile proj
+                && proj.getShooter() instanceof Player p) return p;
+        }
+        return null;
+    }
+
+    /** Open the cargo hold while SEATED in a cargo vehicle. Minecraft fires no server event when a player
+     *  presses E to open their own inventory, so we use the swap-hands key (F) - the reliable seated key -
+     *  to open the cargo instead. Cancels the swap so no offhand juggling happens. */
+    @EventHandler
+    public void onSeatedCargoKey(org.bukkit.event.player.PlayerSwapHandItemsEvent event) {
+        Player player = event.getPlayer();
+        if (!(player.getVehicle() instanceof ArmorStand seat)
+            || !seat.getScoreboardTags().contains(DriveTask.TAG_SEAT)) return;
+        String carId = seat.getPersistentDataContainer().get(plugin.carKey(), PersistentDataType.STRING);
+        if (carId == null || !(Bukkit.getEntity(UUID.fromString(carId)) instanceof Pig base)) return;
+        CarType type = plugin.typeOf(base);
+        if (type == null || type.cargoRows <= 0) return;
+        event.setCancelled(true);
+        plugin.openCargo(player, base, type);
     }
 
     /** Persist the cargo hold when its window closes. */
