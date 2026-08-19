@@ -31,6 +31,13 @@ public final class CarType {
     public double cargoBoxScale; // display scale of each cargo box
     public boolean drift;        // whether this car can drift (handbrake/sharp-turn slides); false = always full grip
     public boolean forklift;     // auto-picks up nearby barrels/crates onto its bed (no winch needed)
+    // Read from a "hitbox" cube in the model (.bbmodel/.json); the Interaction click box for entering/hitting.
+    public double hitboxWidth = 1.9;
+    public double hitboxHeight = 1.5;
+    public double hitboxOffsetY = 0.0;
+    // Read from a "winchhitbox" cube: right-clicking the car near this spot takes out the winch.
+    public boolean hasWinchSpot = false;
+    public double winchX, winchY, winchZ;
     /** Seat positions in model space, driver first - filled from the model
      *  file's "driverseat"/"seat*" elements when one exists (see CarRegistry). */
     public java.util.List<double[]> seatOffsets = java.util.List.of();

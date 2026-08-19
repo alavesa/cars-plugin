@@ -49,9 +49,32 @@ public final class CarRegistry {
                 if (section != null) types.put(id, CarType.load(id, section));
             }
         }
+        autoRegisterFromModels();
         for (CarType type : types.values()) {
             loadSeatsFromModel(type);
         }
+    }
+
+    /** Any .bbmodel (or exported .json) dropped in plugins/Cars/models/ becomes a car type automatically -
+     *  id = the file name. Existing configured types keep their settings; only NEW files are added. */
+    private void autoRegisterFromModels() {
+        File dir = new File(plugin.getDataFolder(), "models");
+        File[] files = dir.listFiles((d, n) -> {
+            String l = n.toLowerCase();
+            return l.endsWith(".bbmodel") || l.endsWith(".json");
+        });
+        if (files == null) return;
+        for (File f : files) {
+            String id = f.getName().replaceFirst("(?i)\\.(bbmodel|json)$", "").toLowerCase();
+            if (id.startsWith("car_")) id = id.substring(4);   // legacy car_jeep.json -> "jeep"
+            if (types.containsKey(id)) continue;               // already configured
+            CarType type = new CarType(id);
+            type.name = Character.toUpperCase(id.charAt(0)) + id.substring(1);
+            type.model = f.getName().replaceFirst("(?i)\\.(bbmodel|json)$", "");
+            types.put(id, type);
+            plugin.getLogger().info("Auto-registered car '" + id + "' from models/" + f.getName());
+        }
+        save();
     }
 
     /**
@@ -60,44 +83,56 @@ public final class CarRegistry {
      * rest "seat", "seat2"... - their centers become the riding positions.
      * Model space: 16 units = 1 block, origin at (8,8,8), forward = +Z.
      */
+    /** Find the model source for a type - a .bbmodel is preferred, else the exported .json. */
+    private File modelFileFor(String model) {
+        File bb = new File(plugin.getDataFolder(), "models/" + model + ".bbmodel");
+        if (bb.isFile()) return bb;
+        File json = new File(plugin.getDataFolder(), "models/" + model + ".json");
+        return json.isFile() ? json : null;
+    }
+
+    /** Parse named cubes out of the model (.bbmodel or exported .json): seats (driverseat/seat*), the click
+     *  HITBOX, and the WINCHHITBOX (where right-clicking takes out the winch). .bbmodel and Minecraft model
+     *  JSON both carry an "elements" array of cubes with name/from/to in the same 16-unit space. */
     private void loadSeatsFromModel(CarType type) {
-        File modelFile = new File(plugin.getDataFolder(), "models/" + type.model + ".json");
-        if (!modelFile.isFile()) {
-            type.seatOffsets = List.of();
-            return;
-        }
+        File modelFile = modelFileFor(type.model);
+        if (modelFile == null) { type.seatOffsets = List.of(); return; }
         try (FileReader reader = new FileReader(modelFile)) {
             JsonObject model = JsonParser.parseReader(reader).getAsJsonObject();
             JsonArray elements = model.getAsJsonArray("elements");
-            if (elements == null) return;
+            if (elements == null) { type.seatOffsets = List.of(); return; }
             double[] driver = null;
             List<double[]> passengers = new ArrayList<>();
             for (JsonElement raw : elements) {
                 JsonObject element = raw.getAsJsonObject();
-                if (!element.has("name")) continue;
+                if (!element.has("name") || !element.has("from") || !element.has("to")) continue;
                 String name = element.get("name").getAsString().toLowerCase();
-                if (!name.startsWith("seat") && !name.equals("driverseat")) continue;
                 JsonArray from = element.getAsJsonArray("from");
                 JsonArray to = element.getAsJsonArray("to");
                 double[] center = new double[3];
-                for (int axis = 0; axis < 3; axis++) {
+                for (int axis = 0; axis < 3; axis++)
                     center[axis] = ((from.get(axis).getAsDouble() + to.get(axis).getAsDouble()) / 2.0 - 8) / 16.0;
-                }
                 if (name.equals("driverseat")) driver = center;
-                else passengers.add(center);
+                else if (name.startsWith("seat")) passengers.add(center);
+                else if (name.equals("hitbox")) {
+                    type.hitboxWidth = Math.abs(to.get(0).getAsDouble() - from.get(0).getAsDouble()) / 16.0;
+                    type.hitboxHeight = Math.abs(to.get(1).getAsDouble() - from.get(1).getAsDouble()) / 16.0;
+                    type.hitboxOffsetY = center[1];
+                } else if (name.equals("winchhitbox")) {
+                    type.hasWinchSpot = true;
+                    type.winchX = center[0]; type.winchY = center[1]; type.winchZ = center[2];
+                }
             }
-            passengers.sort((a, b) -> 0); // keep model order
             List<double[]> seats = new ArrayList<>();
             if (driver != null) seats.add(driver);
             seats.addAll(passengers);
             type.seatOffsets = seats;
-            if (!seats.isEmpty()) {
-                plugin.getLogger().info(type.id + ": " + seats.size()
-                    + " seat(s) read from models/" + type.model + ".json"
-                    + (driver == null ? " (no 'driverseat' element - first seat drives)" : ""));
-            }
+            plugin.getLogger().info(type.id + ": read from models/" + modelFile.getName()
+                + " - " + seats.size() + " seat(s)"
+                + (type.hasWinchSpot ? ", winch spot" : "")
+                + String.format(", hitbox %.2fx%.2f", type.hitboxWidth, type.hitboxHeight));
         } catch (Exception e) {
-            plugin.getLogger().warning("Could not parse models/" + type.model + ".json: " + e.getMessage());
+            plugin.getLogger().warning("Could not parse models/" + type.model + ": " + e.getMessage());
             type.seatOffsets = List.of();
         }
     }

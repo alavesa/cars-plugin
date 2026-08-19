@@ -146,8 +146,8 @@ public final class CarsPlugin extends JavaPlugin {
         });
         base.addPassenger(body);
         Interaction hitbox = location.getWorld().spawn(location, Interaction.class, i -> {
-            i.setInteractionWidth(1.9f);
-            i.setInteractionHeight(1.5f);
+            i.setInteractionWidth((float) type.hitboxWidth);    // from the model's "hitbox" cube
+            i.setInteractionHeight((float) type.hitboxHeight);
             i.setPersistent(true);
             i.addScoreboardTag(DriveTask.TAG_PART);
         });
@@ -157,7 +157,20 @@ public final class CarsPlugin extends JavaPlugin {
             spawnSeat(base, seat);
         }
         spawnCargoBoxes(base, type);
+        if (type.hasWinchSpot) {
+            Interaction winchBox = location.getWorld().spawn(location.clone().add(type.winchX, type.winchY, type.winchZ),
+                Interaction.class, i -> {
+                    i.setInteractionWidth(0.6f);
+                    i.setInteractionHeight(0.6f);
+                    i.setPersistent(true);
+                    i.addScoreboardTag(DriveTask.TAG_PART);
+                    i.addScoreboardTag(TAG_WINCHBOX);
+                });
+            base.addPassenger(winchBox);
+        }
     }
+
+    public static final String TAG_WINCHBOX = "cars.winchbox";
 
     /** Spawn one visible cargo box (barrel / crate) per configured position, riding the car. */
     public void spawnCargoBoxes(Pig base, CarType type) {

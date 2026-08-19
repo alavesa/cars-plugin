@@ -45,6 +45,13 @@ public final class CarListener implements Listener {
     @EventHandler
     public void onMount(PlayerInteractEntityEvent event) {
         if (event.getHand() != EquipmentSlot.HAND) return;
+        // The model's "winchhitbox" spot: right-clicking it takes out the winch.
+        if (event.getRightClicked() instanceof Interaction wb
+            && wb.getScoreboardTags().contains(CarsPlugin.TAG_WINCHBOX)) {
+            event.setCancelled(true);
+            plugin.winch().toggle(event.getPlayer());
+            return;
+        }
         Pig base = resolveCar(event.getRightClicked());
         if (base == null) return;
         event.setCancelled(true);
