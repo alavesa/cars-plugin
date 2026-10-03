@@ -11,6 +11,7 @@ public final class CarType {
     public final String id;
     public String name;
     public String model;        // custom_model_data string on the minecart item
+    public String betterModel;  // BetterModel model name to render instead of the ItemDisplay body ("" = none)
     public double maxSpeed;     // blocks per second
     public double acceleration; // blocks per second, gained per second of throttle
     public double turnRate;     // degrees per tick at full steering
@@ -46,6 +47,7 @@ public final class CarType {
         this.id = id;
         this.name = id;
         this.model = "car_" + id;
+        this.betterModel = "";
         this.maxSpeed = 9.0;
         this.acceleration = 6.0;
         this.turnRate = 4.0;
@@ -68,6 +70,7 @@ public final class CarType {
         CarType type = new CarType(id);
         type.name = section.getString("name", type.name);
         type.model = section.getString("model", type.model);
+        type.betterModel = section.getString("bettermodel", type.betterModel);
         type.maxSpeed = section.getDouble("max-speed", type.maxSpeed);
         type.acceleration = section.getDouble("acceleration", type.acceleration);
         type.turnRate = section.getDouble("turn-rate", type.turnRate);
@@ -98,6 +101,7 @@ public final class CarType {
     public void save(ConfigurationSection section) {
         section.set("name", name);
         section.set("model", model);
+        section.set("bettermodel", betterModel);
         section.set("max-speed", maxSpeed);
         section.set("acceleration", acceleration);
         section.set("turn-rate", turnRate);

@@ -1,7 +1,7 @@
 name: Cars
 version: '${project.version}'
 main: fi.alavesa.cars.CarsPlugin
-softdepend: [Labra]
+softdepend: [Labra, BetterModel]
 api-version: '1.21'
 description: Config-driven rideable vehicles - real WASD driving, custom models.
 commands:

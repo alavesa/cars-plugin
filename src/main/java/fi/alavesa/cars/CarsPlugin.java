@@ -43,6 +43,10 @@ public final class CarsPlugin extends JavaPlugin {
     private NamespacedKey winchCountKey;// how many barrels have been winched onto a car, on the base Pig
     private NamespacedKey boxShadyKey;  // a cargo box's shady-barrel origin key, on the BlockDisplay box
     private WinchManager winch;
+    /** Live BetterModel tracker handles, keyed by base-Pig UUID, so a car's model can be detached on
+     *  wreck/removal. In-memory only: after a restart BetterModel re-creates its own trackers, and
+     *  BetterModelBridge.remove falls back to the entity's tracker registry when no handle is kept here. */
+    private final java.util.Map<java.util.UUID, Object> betterModelTrackers = new java.util.HashMap<>();
 
     @Override
     public void onEnable() {
@@ -122,20 +126,30 @@ public final class CarsPlugin extends JavaPlugin {
         // never reverts to wandering farm animal.
         base.setAware(false);
         org.bukkit.Bukkit.getMobGoals().removeAllGoals(base);
+        // BetterModel takes over the visual body when the type names a model AND the plugin is installed;
+        // otherwise (the default) the ItemDisplay below carries it via CustomModelData, exactly as before.
+        boolean useBetterModel = BetterModelBridge.available()
+            && type.betterModel != null && !type.betterModel.isEmpty();
+        final boolean bmBody = useBetterModel;
         ItemDisplay body = location.getWorld().spawn(location, ItemDisplay.class, display -> {
             display.setPersistent(true);
             display.setTeleportDuration(1);
-            // no brightness override: the body takes the light of wherever it
-            // is - dark in a dark corridor, bright in the sun - plus a soft
-            // ground shadow to sit it in the scene
-            display.setShadowRadius(1.15f);
-            display.setShadowStrength(0.9f);
+            display.addScoreboardTag(DriveTask.TAG_PART);
             display.setTransformation(new Transformation(
                 new Vector3f((float) type.offsetX, (float) type.offsetY, (float) type.offsetZ),
                 new AxisAngle4f(0, 0, 0, 1),
                 new Vector3f((float) type.scale, (float) type.scale, (float) type.scale),
                 new AxisAngle4f(0, 0, 0, 1)));
-            display.addScoreboardTag(DriveTask.TAG_PART);
+            if (bmBody) {
+                // BetterModel draws the car; this display stays empty (invisible, no shadow) and only lingers
+                // as the body "slot" so seats and the wreck-model swap keep working unchanged.
+                return;
+            }
+            // no brightness override: the body takes the light of wherever it
+            // is - dark in a dark corridor, bright in the sun - plus a soft
+            // ground shadow to sit it in the scene
+            display.setShadowRadius(1.15f);
+            display.setShadowStrength(0.9f);
             ItemStack item = new ItemStack(Material.MINECART);
             ItemMeta meta = item.getItemMeta();
             CustomModelDataComponent component = meta.getCustomModelDataComponent();
@@ -145,6 +159,27 @@ public final class CarsPlugin extends JavaPlugin {
             display.setItemStack(item);
         });
         base.addPassenger(body);
+        if (useBetterModel) {
+            // Attach to the base Pig: the tracker follows its position and body yaw (set each tick in
+            // DriveTask) on its own, so the model drives with the car. Keep the handle to detach later.
+            Object tracker = BetterModelBridge.apply(base, type.betterModel);
+            if (tracker != null) {
+                betterModelTrackers.put(base.getUniqueId(), tracker);
+            } else {
+                // Named model unknown: don't leave an empty (invisible) body - fall back to the normal one.
+                getLogger().warning("BetterModel '" + type.betterModel + "' not found for car '"
+                    + type.id + "'; using the ItemDisplay body instead.");
+                body.setShadowRadius(1.15f);
+                body.setShadowStrength(0.9f);
+                ItemStack item = new ItemStack(Material.MINECART);
+                ItemMeta meta = item.getItemMeta();
+                CustomModelDataComponent component = meta.getCustomModelDataComponent();
+                component.setStrings(List.of(type.model));
+                meta.setCustomModelDataComponent(component);
+                item.setItemMeta(meta);
+                body.setItemStack(item);
+            }
+        }
         Interaction hitbox = location.getWorld().spawn(location, Interaction.class, i -> {
             i.setInteractionWidth((float) type.hitboxWidth);    // from the model's "hitbox" cube
             i.setInteractionHeight((float) type.hitboxHeight);
@@ -299,6 +334,10 @@ public final class CarsPlugin extends JavaPlugin {
         // drop the cargo hold on the ground so it isn't lost inside an unusable wreck, and remove the boxes
         dropCargo(base);
         clearCargoBoxes(base);
+        // if BetterModel was drawing this car, detach it - the wreck then shows through the ItemDisplay
+        // body's wreck CustomModelData, swapped in just below like any other car.
+        Object tracker = betterModelTrackers.remove(base.getUniqueId());
+        if (tracker != null) BetterModelBridge.remove(tracker, base);
         // swap the body model to the wreck variant
         ItemDisplay body = bodyOf(base);
         if (body != null && type != null) {
@@ -440,6 +479,7 @@ public final class CarsPlugin extends JavaPlugin {
                     switch (args[2].toLowerCase(Locale.ROOT)) {
                         case "name" -> type.name = value;
                         case "model" -> type.model = value;
+                        case "bettermodel" -> type.betterModel = value.equalsIgnoreCase("none") ? "" : value;
                         case "max-speed" -> type.maxSpeed = Double.parseDouble(value);
                         case "acceleration" -> type.acceleration = Double.parseDouble(value);
                         case "turn-rate" -> type.turnRate = Double.parseDouble(value);
@@ -459,7 +499,7 @@ public final class CarsPlugin extends JavaPlugin {
                         case "drift" -> type.drift = value.equalsIgnoreCase("true") || value.equals("1");
                         case "forklift" -> type.forklift = value.equalsIgnoreCase("true") || value.equals("1");
                         default -> { return error(sender,
-                            "Properties: name, model, max-speed, acceleration, turn-rate, scale, sound, seats, offset-x/y/z, seat-y-adjust, cargo-rows, max-health, wreck-model, cargo-box <i> <x> <y> <z>, cargo-box-model, cargo-box-scale, cargo-box-clear"); }
+                            "Properties: name, model, bettermodel, max-speed, acceleration, turn-rate, scale, sound, seats, offset-x/y/z, seat-y-adjust, cargo-rows, max-health, wreck-model, cargo-box <i> <x> <y> <z>, cargo-box-model, cargo-box-scale, cargo-box-clear"); }
                     }
                 } catch (NumberFormatException e) {
                     return error(sender, "That property takes a number.");
@@ -507,6 +547,11 @@ public final class CarsPlugin extends JavaPlugin {
                     var tags = entity.getScoreboardTags();
                     if (tags.contains(DriveTask.TAG_CAR) || tags.contains(DriveTask.TAG_PART)
                         || tags.contains(DriveTask.TAG_SEAT)) {
+                        // detach any BetterModel drawn on the base before the base entity goes away
+                        if (entity instanceof Pig) {
+                            Object tracker = betterModelTrackers.remove(entity.getUniqueId());
+                            if (tracker != null) BetterModelBridge.remove(tracker, entity);
+                        }
                         entity.getPassengers().forEach(p -> { if (!(p instanceof Player)) p.remove(); });
                         if (entity instanceof Pig || !(entity.getVehicle() instanceof Pig)) {
                             entity.remove();
@@ -609,7 +654,7 @@ public final class CarsPlugin extends JavaPlugin {
             };
             case 3 -> {
                 if (args[0].equalsIgnoreCase("edit")) {
-                    yield filter(Stream.of("name", "model", "max-speed", "acceleration", "turn-rate",
+                    yield filter(Stream.of("name", "model", "bettermodel", "max-speed", "acceleration", "turn-rate",
                         "scale", "sound", "seats", "offset-x", "offset-y", "offset-z", "seat-y-adjust",
                         "cargo-rows", "max-health", "wreck-model", "cargo-box", "cargo-box-model",
                         "cargo-box-scale", "cargo-box-clear", "drift", "forklift"), args[2]);
