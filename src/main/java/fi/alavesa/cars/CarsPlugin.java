@@ -2,21 +2,20 @@ package fi.alavesa.cars;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
+import org.bukkit.World;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Interaction;
-import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Pig;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.meta.ItemMeta;
-import org.bukkit.inventory.meta.components.CustomModelDataComponent;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.util.Transformation;
@@ -25,6 +24,7 @@ import org.joml.Vector3f;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.stream.Stream;
 
 public final class CarsPlugin extends JavaPlugin {
@@ -42,11 +42,11 @@ public final class CarsPlugin extends JavaPlugin {
     private NamespacedKey attackKey;    // last-seen attack timestamp, on the Interaction hitbox
     private NamespacedKey winchCountKey;// how many barrels have been winched onto a car, on the base Pig
     private NamespacedKey boxShadyKey;  // a cargo box's shady-barrel origin key, on the BlockDisplay box
+    private NamespacedKey modelKey;     // UUID of the external tagged model entity this car follows, on the base Pig
     private WinchManager winch;
-    /** Live BetterModel tracker handles, keyed by base-Pig UUID, so a car's model can be detached on
-     *  wreck/removal. In-memory only: after a restart BetterModel re-creates its own trackers, and
-     *  BetterModelBridge.remove falls back to the entity's tracker registry when no handle is kept here. */
-    private final java.util.Map<java.util.UUID, Object> betterModelTrackers = new java.util.HashMap<>();
+
+    /** How close (blocks) an externally-spawned tagged entity has to be for a car to claim it as its model. */
+    public static final double MODEL_CLAIM_RADIUS = 6.0;
 
     @Override
     public void onEnable() {
@@ -59,7 +59,12 @@ public final class CarsPlugin extends JavaPlugin {
         attackKey = new NamespacedKey(this, "last_attack");
         winchCountKey = new NamespacedKey(this, "winch_count");
         boxShadyKey = new NamespacedKey(this, "box_shady");
+        modelKey = new NamespacedKey(this, "model_entity");
         getConfig().addDefault("seat-y-adjust", -0.72);
+        // When a car is removed/scrapped, the external model entity it was following is, by default, LEFT
+        // in place (the op owns it - they brought it in from BetterModel/ModelEngine/an armour stand).
+        // Set true to also delete the model when the car is scrapped with /car remove.
+        getConfig().addDefault("delete-model-on-remove", false);
         getConfig().addDefault("monorail.speed", 0.3);
         getConfig().addDefault("monorail.arrive", 0.7);
         getConfig().addDefault("monorail.dwell-ticks", 40);
@@ -68,8 +73,6 @@ public final class CarsPlugin extends JavaPlugin {
         getConfig().addDefault("monorail.max-rail-pieces", 4000);
         getConfig().options().copyDefaults(true);
         saveConfig();
-        java.io.File bundled = new java.io.File(getDataFolder(), "models/car_jeep.json");
-        if (!bundled.isFile()) saveResource("models/car_jeep.json", false);
         registry = new CarRegistry(this);
         registry.load();
         task = new DriveTask(this);
@@ -95,6 +98,7 @@ public final class CarsPlugin extends JavaPlugin {
     public NamespacedKey cargoKey() { return cargoKey; }
     public NamespacedKey wreckedKey() { return wreckedKey; }
     public NamespacedKey attackKey() { return attackKey; }
+    public NamespacedKey modelKey() { return modelKey; }
 
     // ------------------------------------------------------------- spawning
 
@@ -126,68 +130,17 @@ public final class CarsPlugin extends JavaPlugin {
         // never reverts to wandering farm animal.
         base.setAware(false);
         org.bukkit.Bukkit.getMobGoals().removeAllGoals(base);
-        // BetterModel takes over the visual body when the type names a model AND the plugin is installed;
-        // otherwise (the default) the ItemDisplay below carries it via CustomModelData, exactly as before.
-        boolean useBetterModel = BetterModelBridge.available()
-            && type.betterModel != null && !type.betterModel.isEmpty();
-        final boolean bmBody = useBetterModel;
-        ItemDisplay body = location.getWorld().spawn(location, ItemDisplay.class, display -> {
-            display.setPersistent(true);
-            display.setTeleportDuration(1);
-            display.addScoreboardTag(DriveTask.TAG_PART);
-            display.setTransformation(new Transformation(
-                new Vector3f((float) type.offsetX, (float) type.offsetY, (float) type.offsetZ),
-                new AxisAngle4f(0, 0, 0, 1),
-                new Vector3f((float) type.scale, (float) type.scale, (float) type.scale),
-                new AxisAngle4f(0, 0, 0, 1)));
-            if (bmBody) {
-                // BetterModel draws the car; this display stays empty (invisible, no shadow) and only lingers
-                // as the body "slot" so seats and the wreck-model swap keep working unchanged.
-                return;
-            }
-            // no brightness override: the body takes the light of wherever it
-            // is - dark in a dark corridor, bright in the sun - plus a soft
-            // ground shadow to sit it in the scene
-            display.setShadowRadius(1.15f);
-            display.setShadowStrength(0.9f);
-            ItemStack item = new ItemStack(Material.MINECART);
-            ItemMeta meta = item.getItemMeta();
-            CustomModelDataComponent component = meta.getCustomModelDataComponent();
-            component.setStrings(List.of(type.model));
-            meta.setCustomModelDataComponent(component);
-            item.setItemMeta(meta);
-            display.setItemStack(item);
-        });
-        base.addPassenger(body);
-        if (useBetterModel) {
-            // Attach to the base Pig: the tracker follows its position and body yaw (set each tick in
-            // DriveTask) on its own, so the model drives with the car. Keep the handle to detach later.
-            Object tracker = BetterModelBridge.apply(base, type.betterModel);
-            if (tracker != null) {
-                betterModelTrackers.put(base.getUniqueId(), tracker);
-            } else {
-                // Named model unknown: don't leave an empty (invisible) body - fall back to the normal one.
-                getLogger().warning("BetterModel '" + type.betterModel + "' not found for car '"
-                    + type.id + "'; using the ItemDisplay body instead.");
-                body.setShadowRadius(1.15f);
-                body.setShadowStrength(0.9f);
-                ItemStack item = new ItemStack(Material.MINECART);
-                ItemMeta meta = item.getItemMeta();
-                CustomModelDataComponent component = meta.getCustomModelDataComponent();
-                component.setStrings(List.of(type.model));
-                meta.setCustomModelDataComponent(component);
-                item.setItemMeta(meta);
-                body.setItemStack(item);
-            }
-        }
-        Interaction hitbox = location.getWorld().spawn(location, Interaction.class, i -> {
-            i.setInteractionWidth((float) type.hitboxWidth);    // from the model's "hitbox" cube
+        // NO plugin-owned body model any more: the visible car is an external entity carrying this type's
+        // scoreboard TAG (BetterModel/ModelEngine/armour stand/item display - anything with the tag). The car
+        // CLAIMS the nearest such entity below and DriveTask teleports it onto the car each tick.
+        Interaction hitbox = location.getWorld().spawn(location.clone().add(0, type.hitboxOffsetY, 0), Interaction.class, i -> {
+            i.setInteractionWidth((float) type.hitboxWidth);
             i.setInteractionHeight((float) type.hitboxHeight);
             i.setPersistent(true);
             i.addScoreboardTag(DriveTask.TAG_PART);
         });
         base.addPassenger(hitbox);
-        int seatCount = Math.max(type.seats, type.seatOffsets.isEmpty() ? 0 : type.seatOffsets.size());
+        int seatCount = Math.max(1, type.seatOffsets.size());
         for (int seat = 0; seat < seatCount; seat++) {
             spawnSeat(base, seat);
         }
@@ -203,38 +156,74 @@ public final class CarsPlugin extends JavaPlugin {
                 });
             base.addPassenger(winchBox);
         }
+        // Grab a tagged model if one is already standing by; if not, DriveTask keeps re-trying each tick, so
+        // the op can spawn the model right after the car.
+        tryClaimModel(base, type);
     }
 
     public static final String TAG_WINCHBOX = "cars.winchbox";
 
-    /** Spawn one visible cargo box (barrel / crate) per configured position, riding the car. */
+    // ------------------------------------------------------- external model follow
+
+    /** The external entity this car currently follows, or null if none claimed / it has gone away. */
+    public Entity claimedModel(Pig base) {
+        String id = base.getPersistentDataContainer().get(modelKey, PersistentDataType.STRING);
+        if (id == null) return null;
+        try { return Bukkit.getEntity(UUID.fromString(id)); } catch (IllegalArgumentException e) { return null; }
+    }
+
+    /** Stop following whatever model this car had claimed (the model entity itself is left untouched). */
+    public void releaseModel(Pig base) {
+        base.getPersistentDataContainer().remove(modelKey);
+    }
+
+    /** All model-entity UUIDs already claimed by a car in this world, so two cars never fight over one. */
+    private java.util.Set<UUID> claimedModels(World world) {
+        java.util.Set<UUID> claimed = new java.util.HashSet<>();
+        for (Pig pig : world.getEntitiesByClass(Pig.class)) {
+            if (!pig.getScoreboardTags().contains(DriveTask.TAG_CAR)) continue;
+            String id = pig.getPersistentDataContainer().get(modelKey, PersistentDataType.STRING);
+            if (id != null) try { claimed.add(UUID.fromString(id)); } catch (IllegalArgumentException ignored) { }
+        }
+        return claimed;
+    }
+
+    /** Claim the nearest unclaimed entity carrying this type's tag within {@link #MODEL_CLAIM_RADIUS}, storing
+     *  its UUID on the base Pig. Returns the claimed entity, or null if none is available yet (the car will
+     *  re-try next tick). Our own car parts are never claimed even if they happened to share the tag. */
+    public Entity tryClaimModel(Pig base, CarType type) {
+        if (type.tag == null || type.tag.isEmpty()) return null;
+        Location at = base.getLocation();
+        java.util.Set<UUID> taken = claimedModels(at.getWorld());
+        Entity best = null; double bestSq = MODEL_CLAIM_RADIUS * MODEL_CLAIM_RADIUS;
+        for (Entity e : at.getWorld().getNearbyEntities(at, MODEL_CLAIM_RADIUS, MODEL_CLAIM_RADIUS, MODEL_CLAIM_RADIUS)) {
+            if (e.equals(base) || !e.getScoreboardTags().contains(type.tag)) continue;
+            var tags = e.getScoreboardTags();
+            if (tags.contains(DriveTask.TAG_CAR) || tags.contains(DriveTask.TAG_PART)
+                || tags.contains(DriveTask.TAG_SEAT)) continue;   // never claim our own parts
+            if (taken.contains(e.getUniqueId())) continue;
+            double d = e.getLocation().distanceSquared(at);
+            if (d < bestSq) { bestSq = d; best = e; }
+        }
+        if (best != null) base.getPersistentDataContainer().set(modelKey, PersistentDataType.STRING,
+            best.getUniqueId().toString());
+        return best;
+    }
+
+    /** Spawn one visible cargo box (a plain barrel block display) per configured position, riding the car. */
     public void spawnCargoBoxes(Pig base, CarType type) {
         for (double[] box : type.cargoBoxes) {
-            org.bukkit.entity.Display disp;
             Transformation xf = new Transformation(
                 new Vector3f((float) box[0], (float) box[1], (float) box[2]),
                 new AxisAngle4f(0, 0, 0, 1),
                 new Vector3f((float) type.cargoBoxScale, (float) type.cargoBoxScale, (float) type.cargoBoxScale),
                 new AxisAngle4f(0, 0, 0, 1));
-            if (type.cargoBoxModel == null || type.cargoBoxModel.isEmpty()) {
-                disp = base.getWorld().spawn(base.getLocation(), org.bukkit.entity.BlockDisplay.class, d -> {
+            org.bukkit.entity.BlockDisplay disp = base.getWorld().spawn(base.getLocation(),
+                org.bukkit.entity.BlockDisplay.class, d -> {
                     d.setBlock(Material.BARREL.createBlockData());
                     d.setPersistent(true); d.setTeleportDuration(1); d.setTransformation(xf);
                     d.addScoreboardTag(DriveTask.TAG_PART); d.addScoreboardTag(TAG_CARGOBOX);
                 });
-            } else {
-                disp = base.getWorld().spawn(base.getLocation(), ItemDisplay.class, d -> {
-                    ItemStack it = new ItemStack(Material.BARREL);
-                    ItemMeta m = it.getItemMeta();
-                    CustomModelDataComponent c = m.getCustomModelDataComponent();
-                    c.setStrings(List.of(type.cargoBoxModel));
-                    m.setCustomModelDataComponent(c);
-                    it.setItemMeta(m);
-                    d.setItemStack(it);
-                    d.setPersistent(true); d.setTeleportDuration(1); d.setTransformation(xf);
-                    d.addScoreboardTag(DriveTask.TAG_PART); d.addScoreboardTag(TAG_CARGOBOX);
-                });
-            }
             base.addPassenger(disp);
         }
     }
@@ -277,13 +266,6 @@ public final class CarsPlugin extends JavaPlugin {
         return base.getPersistentDataContainer().getOrDefault(wreckedKey, PersistentDataType.INTEGER, 0) == 1;
     }
 
-    public ItemDisplay bodyOf(Pig base) {
-        for (Entity p : base.getPassengers()) {
-            if (p instanceof ItemDisplay d && d.getScoreboardTags().contains(DriveTask.TAG_PART)) return d;
-        }
-        return null;
-    }
-
     public Interaction hitboxOf(Pig base) {
         for (Entity p : base.getPassengers()) {
             if (p instanceof Interaction i && i.getScoreboardTags().contains(DriveTask.TAG_PART)) return i;
@@ -319,10 +301,10 @@ public final class CarsPlugin extends JavaPlugin {
         return false;
     }
 
-    /** Turn a car into an inert wreck: same model, swapped to the wreck texture, undrivable, no seats. */
+    /** Turn a car into an inert wreck: undrivable, no seats. The external model is RELEASED (left where it
+     *  last followed to, like a crashed body) - it is the op's entity, so Cars never deletes it on a wreck. */
     public void wreckCar(Pig base) {
         if (isWrecked(base)) return;
-        CarType type = typeOf(base);
         base.getPersistentDataContainer().set(wreckedKey, PersistentDataType.INTEGER, 1);
         base.getPersistentDataContainer().set(healthKey, PersistentDataType.DOUBLE, 0.0);
         // eject everyone and delete the seats - a wreck can't be driven or ridden
@@ -334,21 +316,8 @@ public final class CarsPlugin extends JavaPlugin {
         // drop the cargo hold on the ground so it isn't lost inside an unusable wreck, and remove the boxes
         dropCargo(base);
         clearCargoBoxes(base);
-        // if BetterModel was drawing this car, detach it - the wreck then shows through the ItemDisplay
-        // body's wreck CustomModelData, swapped in just below like any other car.
-        Object tracker = betterModelTrackers.remove(base.getUniqueId());
-        if (tracker != null) BetterModelBridge.remove(tracker, base);
-        // swap the body model to the wreck variant
-        ItemDisplay body = bodyOf(base);
-        if (body != null && type != null) {
-            ItemStack item = new ItemStack(Material.MINECART);
-            ItemMeta meta = item.getItemMeta();
-            CustomModelDataComponent c = meta.getCustomModelDataComponent();
-            c.setStrings(List.of(type.wreckModel));
-            meta.setCustomModelDataComponent(c);
-            item.setItemMeta(meta);
-            body.setItemStack(item);
-        }
+        // stop following the external model (its last position becomes the "wreck" where it sits)
+        releaseModel(base);
         base.getWorld().playSound(base.getLocation(), org.bukkit.Sound.ENTITY_GENERIC_EXPLODE, 1.0f, 0.8f);
         base.getWorld().spawnParticle(org.bukkit.Particle.LARGE_SMOKE, base.getLocation().add(0, 1, 0), 30, 0.8, 0.6, 0.8, 0.05);
     }
@@ -445,20 +414,36 @@ public final class CarsPlugin extends JavaPlugin {
         if (args.length == 0) return usage(sender);
         switch (args[0].toLowerCase(Locale.ROOT)) {
             case "create" -> {
-                if (args.length < 2) return usage(sender);
+                if (args.length < 3) return error(sender,
+                    "/car create <id> <tag>   (tag = the scoreboard tag your model entity carries)");
                 String id = args[1].toLowerCase(Locale.ROOT);
                 if (registry.get(id) != null) return error(sender, "'" + id + "' already exists.");
                 CarType type = registry.create(id);
-                sender.sendMessage(Component.text("Created vehicle type '" + id
-                    + "' (model hook: " + type.model + "). Tune it with /car edit " + id + " ...",
+                type.tag = args[2];
+                registry.save();
+                sender.sendMessage(Component.text("Created vehicle type '" + id + "' following model tag '"
+                    + type.tag + "'. Spawn a tagged model near a spawned car, or tune with /car edit " + id + " ...",
                     NamedTextColor.AQUA));
+                return true;
+            }
+            case "seat" -> { return seatCommand(sender, args); }
+            case "seats" -> {
+                if (args.length < 2) return error(sender, "/car seats <id>");
+                CarType type = registry.get(args[1]);
+                if (type == null) return error(sender, "No vehicle type '" + args[1] + "'.");
+                if (type.seatOffsets.isEmpty()) { sender.sendMessage(Component.text(type.id + " has no seats.", NamedTextColor.GRAY)); return true; }
+                for (int i = 0; i < type.seatOffsets.size(); i++) {
+                    double[] s = type.seatOffsets.get(i);
+                    sender.sendMessage(Component.text("  " + (i == 0 ? "driver" : "seat " + i) + ": "
+                        + s[0] + " " + s[1] + " " + s[2], NamedTextColor.AQUA));
+                }
                 return true;
             }
             case "edit" -> {
                 if (args.length < 4) return usage(sender);
                 CarType type = registry.get(args[1]);
                 if (type == null) return error(sender, "No vehicle type '" + args[1] + "'.");
-                // cargo-box takes an index + x y z, so it's handled before the single-value properties.
+                // cargo-box and winch-spot take an index/x y z, so they're handled before the single-value props.
                 if (args[2].equalsIgnoreCase("cargo-box")) {
                     if (args.length < 7) return error(sender,
                         "/car edit " + type.id + " cargo-box <index> <x> <y> <z>   (index 0,1,2... = each box on the car)");
@@ -474,49 +459,59 @@ public final class CarsPlugin extends JavaPlugin {
                         NamedTextColor.AQUA));
                     return true;
                 }
+                if (args[2].equalsIgnoreCase("winch-spot")) {
+                    if (args.length < 6) return error(sender,
+                        "/car edit " + type.id + " winch-spot <x> <y> <z>   (also sets winch=true)");
+                    try {
+                        type.winchX = Double.parseDouble(args[3]);
+                        type.winchY = Double.parseDouble(args[4]);
+                        type.winchZ = Double.parseDouble(args[5]);
+                        type.hasWinchSpot = true;
+                    } catch (NumberFormatException e) { return error(sender, "x y z must be numbers."); }
+                    registry.save();
+                    sender.sendMessage(Component.text(type.id + " winch spot -> " + args[3] + " " + args[4] + " "
+                        + args[5] + " (respawn cars to apply)", NamedTextColor.AQUA));
+                    return true;
+                }
                 String value = String.join(" ", java.util.Arrays.copyOfRange(args, 3, args.length));
                 try {
                     switch (args[2].toLowerCase(Locale.ROOT)) {
                         case "name" -> type.name = value;
-                        case "model" -> type.model = value;
-                        case "bettermodel" -> type.betterModel = value.equalsIgnoreCase("none") ? "" : value;
+                        case "tag" -> type.tag = value;
                         case "max-speed" -> type.maxSpeed = Double.parseDouble(value);
                         case "acceleration" -> type.acceleration = Double.parseDouble(value);
                         case "turn-rate" -> type.turnRate = Double.parseDouble(value);
-                        case "scale" -> type.scale = Double.parseDouble(value);
                         case "sound" -> type.sound = value;
-                        case "seats" -> type.seats = Math.max(1, Math.min(4, Integer.parseInt(value)));
-                        case "offset-x" -> type.offsetX = Double.parseDouble(value);
-                        case "offset-y" -> type.offsetY = Double.parseDouble(value);
-                        case "offset-z" -> type.offsetZ = Double.parseDouble(value);
                         case "seat-y-adjust" -> type.seatYAdjust = Double.parseDouble(value);
                         case "cargo-rows" -> type.cargoRows = Math.max(0, Math.min(6, Integer.parseInt(value)));
                         case "max-health" -> type.maxHealth = Math.max(1.0, Double.parseDouble(value));
-                        case "wreck-model" -> type.wreckModel = value;
-                        case "cargo-box-model" -> type.cargoBoxModel = value.equalsIgnoreCase("none") ? "" : value;
                         case "cargo-box-scale" -> type.cargoBoxScale = Double.parseDouble(value);
                         case "cargo-box-clear" -> type.cargoBoxes.clear();
+                        case "hitbox-width" -> type.hitboxWidth = Double.parseDouble(value);
+                        case "hitbox-height" -> type.hitboxHeight = Double.parseDouble(value);
+                        case "hitbox-offset-y" -> type.hitboxOffsetY = Double.parseDouble(value);
+                        case "winch" -> type.hasWinchSpot = value.equalsIgnoreCase("true") || value.equals("1");
                         case "drift" -> type.drift = value.equalsIgnoreCase("true") || value.equals("1");
                         case "forklift" -> type.forklift = value.equalsIgnoreCase("true") || value.equals("1");
                         default -> { return error(sender,
-                            "Properties: name, model, bettermodel, max-speed, acceleration, turn-rate, scale, sound, seats, offset-x/y/z, seat-y-adjust, cargo-rows, max-health, wreck-model, cargo-box <i> <x> <y> <z>, cargo-box-model, cargo-box-scale, cargo-box-clear"); }
+                            "Properties: name, tag, max-speed, acceleration, turn-rate, sound, seat-y-adjust, cargo-rows, max-health, cargo-box <i> <x> <y> <z>, cargo-box-scale, cargo-box-clear, hitbox-width, hitbox-height, hitbox-offset-y, winch, winch-spot <x> <y> <z>, drift, forklift  (seats: /car seat <id> ...)"); }
                     }
                 } catch (NumberFormatException e) {
                     return error(sender, "That property takes a number.");
                 }
                 registry.save();
                 sender.sendMessage(Component.text(type.id + "." + args[2] + " = " + value
-                    + " (existing cars keep their old seats until respawned)", NamedTextColor.AQUA));
+                    + " (respawn cars to apply)", NamedTextColor.AQUA));
                 return true;
             }
             case "list" -> {
                 for (CarType type : registry.all().values()) {
                     sender.sendMessage(Component.text(type.id + " - \"" + type.name + "\", "
-                        + type.seats + " seat(s), " + type.maxSpeed + " b/s, model " + type.model,
+                        + type.seatOffsets.size() + " seat(s), " + type.maxSpeed + " b/s, tag '" + type.tag + "'",
                         NamedTextColor.AQUA));
                 }
                 if (registry.all().isEmpty()) sender.sendMessage(
-                    Component.text("No vehicle types. /car create <id>", NamedTextColor.GRAY));
+                    Component.text("No vehicle types. /car create <id> <tag>", NamedTextColor.GRAY));
                 return true;
             }
             case "spawn" -> {
@@ -525,8 +520,9 @@ public final class CarsPlugin extends JavaPlugin {
                 CarType type = registry.get(args[1]);
                 if (type == null) return error(sender, "No vehicle type '" + args[1] + "'.");
                 spawnCar(type, player.getLocation());
-                sender.sendMessage(Component.text(type.name + " delivered. Right-click to get in.",
-                    NamedTextColor.AQUA));
+                sender.sendMessage(Component.text(type.name + " delivered (following tag '" + type.tag
+                    + "'). Spawn a tagged model within " + (int) MODEL_CLAIM_RADIUS
+                    + " blocks if one isn't already there. Right-click to get in.", NamedTextColor.AQUA));
                 return true;
             }
             case "winch" -> {
@@ -536,21 +532,23 @@ public final class CarsPlugin extends JavaPlugin {
             }
             case "reload" -> {
                 registry.load();
-                sender.sendMessage(Component.text("cars.yml and seat models reloaded ("
+                sender.sendMessage(Component.text("cars.yml reloaded ("
                     + registry.all().size() + " type(s)). Respawn cars to apply.", NamedTextColor.AQUA));
                 return true;
             }
             case "remove" -> {
                 if (!(sender instanceof Player player)) return error(sender, "Players only.");
+                boolean deleteModel = getConfig().getBoolean("delete-model-on-remove", false);
                 int removed = 0;
                 for (Entity entity : player.getLocation().getNearbyEntities(16, 16, 16)) {
                     var tags = entity.getScoreboardTags();
                     if (tags.contains(DriveTask.TAG_CAR) || tags.contains(DriveTask.TAG_PART)
                         || tags.contains(DriveTask.TAG_SEAT)) {
-                        // detach any BetterModel drawn on the base before the base entity goes away
-                        if (entity instanceof Pig) {
-                            Object tracker = betterModelTrackers.remove(entity.getUniqueId());
-                            if (tracker != null) BetterModelBridge.remove(tracker, entity);
+                        // the external model is the op's entity: left in place by default, deleted only when
+                        // delete-model-on-remove is on.
+                        if (entity instanceof Pig pig) {
+                            Entity model = claimedModel(pig);
+                            if (model != null && deleteModel) model.remove();
                         }
                         entity.getPassengers().forEach(p -> { if (!(p instanceof Player)) p.remove(); });
                         if (entity instanceof Pig || !(entity.getVehicle() instanceof Pig)) {
@@ -559,13 +557,41 @@ public final class CarsPlugin extends JavaPlugin {
                         removed++;
                     }
                 }
-                sender.sendMessage(Component.text("Scrapped " + removed + " car part(s) within 16 blocks.",
-                    NamedTextColor.AQUA));
+                sender.sendMessage(Component.text("Scrapped " + removed + " car part(s) within 16 blocks"
+                    + (deleteModel ? " (and their models)." : " (models left in place)."), NamedTextColor.AQUA));
                 return true;
             }
             case "monorail", "rail" -> { return monorail(sender, args); }
             default -> { return usage(sender); }
         }
+    }
+
+    /** /car seat <id> driver|<n> <x> <y> <z> - set a seat offset (n one past the end adds a seat). */
+    private boolean seatCommand(CommandSender sender, String[] args) {
+        if (args.length < 6) return error(sender,
+            "/car seat <id> driver <x> <y> <z>   |   /car seat <id> <n> <x> <y> <z>   (n = 1,2,...; one past the end adds a seat)");
+        CarType type = registry.get(args[1]);
+        if (type == null) return error(sender, "No vehicle type '" + args[1] + "'.");
+        int index;
+        if (args[2].equalsIgnoreCase("driver")) {
+            index = 0;
+        } else {
+            try { index = Integer.parseInt(args[2]); }
+            catch (NumberFormatException e) { return error(sender, "Seat must be 'driver' or a number 1,2,..."); }
+            if (index < 1) return error(sender, "Passenger seat number starts at 1 (0 = driver).");
+        }
+        double x, y, z;
+        try { x = Double.parseDouble(args[3]); y = Double.parseDouble(args[4]); z = Double.parseDouble(args[5]); }
+        catch (NumberFormatException e) { return error(sender, "x y z must be numbers."); }
+        if (index > type.seatOffsets.size()) return error(sender,
+            "Seat " + index + " skips a gap - the next addable seat is " + type.seatOffsets.size() + ".");
+        if (index == type.seatOffsets.size()) type.seatOffsets.add(new double[]{x, y, z});
+        else type.seatOffsets.set(index, new double[]{x, y, z});
+        registry.save();
+        sender.sendMessage(Component.text(type.id + " " + (index == 0 ? "driver" : "seat " + index) + " -> "
+            + x + " " + y + " " + z + " (" + type.seatOffsets.size() + " seat(s); respawn cars to apply)",
+            NamedTextColor.AQUA));
+        return true;
     }
 
     /** /car monorail line <name> | node <name> | build <name> | cart <name> | list | remove <name> | scrap */
@@ -646,18 +672,21 @@ public final class CarsPlugin extends JavaPlugin {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         return switch (args.length) {
-            case 1 -> filter(Stream.of("create", "edit", "list", "spawn", "winch", "remove", "reload", "monorail"), args[0]);
+            case 1 -> filter(Stream.of("create", "edit", "seat", "seats", "list", "spawn", "winch", "remove", "reload", "monorail"), args[0]);
             case 2 -> switch (args[0].toLowerCase(Locale.ROOT)) {
-                case "edit", "spawn" -> filter(registry.all().keySet().stream(), args[1]);
+                case "edit", "spawn", "seat", "seats" -> filter(registry.all().keySet().stream(), args[1]);
                 case "monorail", "rail" -> filter(Stream.of("line", "node", "build", "cart", "list", "remove", "scrap"), args[1]);
                 default -> List.of();
             };
             case 3 -> {
                 if (args[0].equalsIgnoreCase("edit")) {
-                    yield filter(Stream.of("name", "model", "bettermodel", "max-speed", "acceleration", "turn-rate",
-                        "scale", "sound", "seats", "offset-x", "offset-y", "offset-z", "seat-y-adjust",
-                        "cargo-rows", "max-health", "wreck-model", "cargo-box", "cargo-box-model",
-                        "cargo-box-scale", "cargo-box-clear", "drift", "forklift"), args[2]);
+                    yield filter(Stream.of("name", "tag", "max-speed", "acceleration", "turn-rate",
+                        "sound", "seat-y-adjust", "cargo-rows", "max-health", "cargo-box", "cargo-box-scale",
+                        "cargo-box-clear", "hitbox-width", "hitbox-height", "hitbox-offset-y", "winch",
+                        "winch-spot", "drift", "forklift"), args[2]);
+                }
+                if (args[0].equalsIgnoreCase("seat")) {
+                    yield filter(Stream.of("driver", "1", "2", "3"), args[2]);
                 }
                 if ((args[0].equalsIgnoreCase("monorail") || args[0].equalsIgnoreCase("rail"))
                     && Stream.of("node", "build", "cart", "remove").anyMatch(s -> s.equalsIgnoreCase(args[1]))) {
@@ -675,7 +704,7 @@ public final class CarsPlugin extends JavaPlugin {
 
     private boolean usage(CommandSender sender) {
         sender.sendMessage(Component.text(
-            "/car create <id> | edit <id> <prop> <value> | list | spawn <id> | remove | monorail ...",
+            "/car create <id> <tag> | edit <id> <prop> <value> | seat <id> driver|<n> <x> <y> <z> | seats <id> | list | spawn <id> | remove | monorail ...",
             NamedTextColor.AQUA));
         return true;
     }

@@ -1,15 +1,17 @@
 name: Cars
 version: '${project.version}'
 main: fi.alavesa.cars.CarsPlugin
-softdepend: [Labra, BetterModel]
+softdepend: [Labra]
 api-version: '1.21'
-description: Config-driven rideable vehicles - real WASD driving, custom models.
+description: Config-driven rideable vehicles - real WASD driving; the body is any tagged model entity the car follows.
 commands:
   car:
     description: Create, edit and spawn vehicles
     usage: |
-      /car create <id>
-      /car edit <id> <name|model|max-speed|acceleration|turn-rate|scale|sound> <value>
+      /car create <id> <tag>     (tag = the scoreboard tag your model entity carries)
+      /car edit <id> <name|tag|max-speed|acceleration|turn-rate|sound|...> <value>
+      /car seat <id> driver|<n> <x> <y> <z>
+      /car seats <id>
       /car list
       /car spawn <id>
       /car remove        (cars within 16 blocks)

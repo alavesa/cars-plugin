@@ -10,7 +10,6 @@ import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
-import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Pig;
 import org.bukkit.entity.Player;
 import org.bukkit.persistence.PersistentDataType;
@@ -24,12 +23,13 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * The engine. Every tick, each car (an invisible pig carrying the model
- * display, a mount hitbox and the driver) reads its driver's live WASD input
- * (PlayerInputEvent) and turns it into velocity: W throttles, S brakes then
- * reverses, A/D steer - sharper at speed, reversed in reverse, like a car.
- * Passenger seats are free-standing invisible armor stands pulled along by
- * velocity (never teleported - teleports would eject the passengers).
+ * The engine. Every tick, each car (an invisible pig carrying a mount hitbox
+ * and the driver) reads its driver's live WASD input (PlayerInputEvent) and
+ * turns it into velocity: W throttles, S brakes then reverses, A/D steer -
+ * sharper at speed, reversed in reverse, like a car. The visible body is an
+ * external entity carrying the type's scoreboard tag, claimed and teleported
+ * onto the car each tick (see {@link #followModel}). Seats are free-standing
+ * invisible armor stands teleported along, keeping their riders aboard.
  */
 public final class DriveTask implements Runnable {
 
@@ -49,8 +49,6 @@ public final class DriveTask implements Runnable {
     /** Per-tick catch-up when NOT drifting - grip is basically total, so
      *  straight-line driving points exactly where the nose points. */
     private static final double GRIP_NORMAL = 0.9;
-    /** How fast the drift state fades once the slide angle drops back down. */
-    private static final double DRIFT_DECAY = 0.85;
     /** While drifting, the surface grip is scaled by this so the car keeps its
      *  momentum and actually SLIDES (even on high-grip pavement) instead of
      *  snapping to the nose. Lower = looser, longer slides. */
@@ -59,22 +57,10 @@ public final class DriveTask implements Runnable {
      *  is the drift handbrake and does not dismount the driver (see CarListener). */
     public static final double HANDBRAKE_MIN_SPEED = 3.0;
 
-    // --------------------------------------------------------- camera sway knobs
-    /** Idle engine shake amplitude (degrees of roll) when barely moving. */
-    private static final float SWAY_IDLE = 0.6f;
-    /** Extra roll amplitude (degrees) added at full speed - the fast bounce. */
-    private static final float SWAY_SPEED = 3.5f;
-    /** Vertical bob amplitude (blocks) added at full speed. */
-    private static final float BOB_SPEED = 0.05f;
-    /** How hard the model leans into a drift (degrees of roll per unit slide). */
-    private static final float LEAN_PER_DRIFT = 0.5f;
-    /** Sway/bob oscillation speed - radians of phase advanced per tick. */
-    private static final double SWAY_RATE = 0.55;
-
-    /** Fallback seat offsets [x, y, z] when the model file names none.
-     *  Index 0 is the driver. Model space axes: +Z forward, +X across. */
+    /** Fallback seat offsets [x, y, z] when a type has none configured.
+     *  Index 0 is the driver. Axes: +Z forward, +X across, +Y up (blocks). */
     private static final double[][] DEFAULT_SEATS = {
-        {0.35, 0.35, 0.1}, {-0.35, 0.35, 0.1}, {0.35, 0.35, -0.7}, {-0.35, 0.35, -0.7}};
+        {0.35, 1.0, 0.3}, {-0.35, 1.0, 0.3}, {0.35, 1.0, -0.6}, {-0.35, 1.0, -0.6}};
 
     private final CarsPlugin plugin;
     private final Map<UUID, Double> speeds = new HashMap<>();
@@ -82,15 +68,9 @@ public final class DriveTask implements Runnable {
     private final Set<UUID> prepared = new HashSet<>();
     private final Map<UUID, Vector> momentum = new HashMap<>();
     private final Map<UUID, Float> yaws = new HashMap<>();
-    private final Map<UUID, Double> lastY = new HashMap<>();
-    private final Map<UUID, Float> tilt = new HashMap<>();
     /** The heading (degrees) our velocity actually travels along - it lags
      *  the pointing yaw during a drift, then grips back onto it. */
     private final Map<UUID, Float> velHeading = new HashMap<>();
-    /** Smoothed drift amount (signed slide angle) driving the lean + smoke. */
-    private final Map<UUID, Float> drift = new HashMap<>();
-    /** Smoothed model roll so the sway eases in and out (no snap). */
-    private final Map<UUID, Float> roll = new HashMap<>();
 
     /** How the ground drives back: [speed factor, grip]. */
     private static double[] surface(Block ground, boolean inWater) {
@@ -190,15 +170,6 @@ public final class DriveTask implements Runnable {
                 s.getPersistentDataContainer().getOrDefault(plugin.seatKey(),
                     PersistentDataType.INTEGER, -1) == 0);
             if (!hasDriverSeat) plugin.spawnSeat(base, 0);
-            // repair pass for older cars: drop the glow-in-the-dark brightness
-            // override so the body reacts to area lighting, and add the shadow
-            for (Entity passenger : base.getPassengers()) {
-                if (passenger instanceof ItemDisplay display) {
-                    display.setBrightness(null);
-                    display.setShadowRadius(1.15f);
-                    display.setShadowStrength(0.9f);
-                }
-            }
         }
         CarType type = plugin.registry().get(
             base.getPersistentDataContainer().getOrDefault(plugin.typeKey(), PersistentDataType.STRING, ""));
@@ -272,11 +243,6 @@ public final class DriveTask implements Runnable {
         double catchUp = drifting ? DRIFT_GRIP : GRIP_NORMAL;
         vh += (float) (gap * catchUp);
         velHeading.put(base.getUniqueId(), vh);
-        // smoothed, signed slide angle for lean + smoke feedback
-        float driftAmount = drift.getOrDefault(base.getUniqueId(), 0f);
-        driftAmount = (float) (driftAmount * DRIFT_DECAY
-            + (drifting ? gap : 0f) * (1 - DRIFT_DECAY));
-        drift.put(base.getUniqueId(), driftAmount);
 
         double vhRad = Math.toRadians(vh);
         Vector slideDir = new Vector(-Math.sin(vhRad), 0, Math.cos(vhRad));
@@ -294,41 +260,11 @@ public final class DriveTask implements Runnable {
         base.setRotation(yaw, 0);
         yaws.put(base.getUniqueId(), yaw);
 
-        // nose up the stairs, nose down the slope (visual tilt on the model)
-        double dy = at.getY() - lastY.getOrDefault(base.getUniqueId(), at.getY());
-        lastY.put(base.getUniqueId(), at.getY());
-        double horizontal = Math.max(0.03, Math.abs(speed) / 20.0);
-        float targetTilt = (float) Math.max(-25, Math.min(25,
-            -Math.toDegrees(Math.atan2(dy, horizontal))));
-        float smoothTilt = tilt.getOrDefault(base.getUniqueId(), 0f);
-        smoothTilt += (targetTilt - smoothTilt) * 0.25f;
-        if (Math.abs(speed) < 0.3) smoothTilt *= 0.8f;
-        tilt.put(base.getUniqueId(), smoothTilt);
+        // the visible body is now an external, tag-claimed entity (BetterModel/ModelEngine/armour stand/item
+        // display) - drag it onto the car each tick, facing the car's yaw. Claims one lazily if the op spawns
+        // the model after the car.
+        followModel(base, type, yaw);
 
-        // ---- camera sway: Paper can't move the real camera, so we shake the
-        // MODEL. A sine-driven roll and a cosine-driven vertical bob, both
-        // scaling from a gentle idle shudder to a real bounce at speed, plus
-        // a lean INTO the current drift. Roll + bob live on the display's
-        // transform (visual only - the pig physics never sees them).
-        double speedFrac = Math.min(1.0, Math.abs(speed) / Math.max(0.1, type.maxSpeed));
-        double phase = tick * SWAY_RATE;
-        // The idle engine-shudder only runs while someone is aboard. An empty
-        // car that has rolled to a stop rests flat - no perpetual wiggle.
-        float idleAmp = driver != null ? SWAY_IDLE : 0f;
-        float swayAmp = idleAmp + SWAY_SPEED * (float) speedFrac;
-        float targetRoll = swayAmp * (float) Math.sin(phase)
-            + driftAmount * LEAN_PER_DRIFT;      // lean the body into the slide
-        float smoothRoll = roll.getOrDefault(base.getUniqueId(), 0f);
-        smoothRoll += (targetRoll - smoothRoll) * 0.3f; // ease, never teleport
-        roll.put(base.getUniqueId(), smoothRoll);
-        float bob = BOB_SPEED * (float) speedFrac * (float) Math.cos(phase * 2);
-
-        for (Entity passenger : base.getPassengers()) {
-            if (passenger instanceof ItemDisplay display) {
-                display.setRotation(yaw, smoothTilt);
-                applySway(display, type, smoothRoll, bob);
-            }
-        }
         if (Math.abs(speed) > 0.4 && tick % 6 == 0) {
             float pitch = (float) (0.6 + Math.abs(speed) / type.maxSpeed);
             base.getWorld().playSound(at, type.sound, 0.7f, pitch);
@@ -361,10 +297,7 @@ public final class DriveTask implements Runnable {
         }
         // speedometer on the driver's actionbar - top line, above everything
         if (driver != null) showSpeedometer(driver, Math.abs(speed));
-        ItemDisplay body = base.getPassengers().stream()
-            .filter(e -> e instanceof ItemDisplay).map(e -> (ItemDisplay) e)
-            .findFirst().orElse(null);
-        positionSeats(base, type, body, seats, yaw);
+        positionSeats(base, type, seats, yaw);
     }
 
     /** Shortest signed distance between two yaws, in [-180, 180). */
@@ -373,18 +306,21 @@ public final class DriveTask implements Runnable {
         return (float) d;
     }
 
-    /** Rolls and bobs the model on its own transform - a visual-only shake
-     *  layered on top of the base offset/scale from the CarType. The pig and
-     *  the seat stands never see it, so driving physics stay untouched. */
-    private void applySway(ItemDisplay display, CarType type, float rollDeg, float bobY) {
-        org.joml.AxisAngle4f leftRotation = new org.joml.AxisAngle4f(
-            (float) Math.toRadians(rollDeg), 0f, 0f, 1f); // roll about forward axis
-        display.setTransformation(new org.bukkit.util.Transformation(
-            new org.joml.Vector3f((float) type.offsetX,
-                (float) type.offsetY + bobY, (float) type.offsetZ),
-            leftRotation,
-            new org.joml.Vector3f((float) type.scale, (float) type.scale, (float) type.scale),
-            new org.joml.AxisAngle4f(0, 0, 0, 1)));
+    /** Teleport this car's claimed external model entity onto the base each tick, facing the car's yaw (pitch
+     *  flat). If the claim is gone - the entity was killed/removed - release it and try to claim another
+     *  tagged entity standing by; if none is in range yet, the car simply drives on invisibly until one is. */
+    private void followModel(Pig base, CarType type, float yaw) {
+        Entity model = plugin.claimedModel(base);
+        if (model == null || model.isDead() || !model.isValid()) {
+            if (model != null) plugin.releaseModel(base);   // stale claim: the entity is gone
+            model = plugin.tryClaimModel(base, type);
+            if (model == null) return;                       // nothing to follow yet - retry next tick
+        }
+        Location target = base.getLocation().clone();
+        target.setYaw(yaw);
+        target.setPitch(0);
+        // cross-world safe: teleport brings the model to the car's world if a portal split them apart
+        model.teleport(target);
     }
 
     /** "⏲ 14.2 blocks/s" on the driver's actionbar, green->yellow->red as it
@@ -426,30 +362,23 @@ public final class DriveTask implements Runnable {
         return DEFAULT_SEATS[Math.min(index, DEFAULT_SEATS.length - 1)];
     }
 
-    /** Seats are placed where the model says they are, anchored to the REAL
-     *  display position (no guessed attach heights). Rider height fine-tuning:
-     *  global seat-y-adjust in config.yml, per-type via /car edit - the
-     *  per-type value applies live, no respawn needed. */
-    private void positionSeats(Pig base, CarType type, ItemDisplay body, List<ArmorStand> seats, float yaw) {
+    /** Seats are placed at the offsets set with /car seat (in blocks, relative to the car base). Rider
+     *  height fine-tuning: global seat-y-adjust in config.yml, per-type via /car edit - the per-type value
+     *  applies live, no respawn needed. */
+    private void positionSeats(Pig base, CarType type, List<ArmorStand> seats, float yaw) {
         double radians = Math.toRadians(yaw);
-        // model +Z -> forward, model +X rotated consistently with the display
+        // +Z -> forward, +X across, consistent with the model's facing
         Vector axisZ = new Vector(-Math.sin(radians), 0, Math.cos(radians));
         Vector axisX = new Vector(Math.cos(radians), 0, Math.sin(radians));
-        boolean fromModel = !type.seatOffsets.isEmpty();
-        // where the model origin actually is in the world
-        double originY = (body != null ? body.getLocation().getY() : base.getLocation().getY() + 0.9)
-            + type.offsetY;
         double riderOffset = plugin.getConfig().getDouble("seat-y-adjust", -0.72);
+        double baseY = base.getLocation().getY();
         for (ArmorStand seat : seats) {
             int index = seat.getPersistentDataContainer().getOrDefault(plugin.seatKey(), PersistentDataType.INTEGER, 0);
             double[] off = seatOffset(type, index);
-            double s = fromModel ? type.scale : 1.0;
-            double seatY = fromModel
-                ? originY + off[1] * s + riderOffset + type.seatYAdjust
-                : base.getLocation().getY() + off[1] + type.seatYAdjust;
+            double seatY = baseY + off[1] + riderOffset + type.seatYAdjust;
             Location target = base.getLocation().clone()
-                .add(axisX.clone().multiply(off[0] * s))
-                .add(axisZ.clone().multiply(off[2] * s));
+                .add(axisX.clone().multiply(off[0]))
+                .add(axisZ.clone().multiply(off[2]));
             target.setY(seatY);
             // Armor stands ignore velocity entirely (the "seat stayed at the
             // spawn point" bug) - teleport them instead, keeping the rider

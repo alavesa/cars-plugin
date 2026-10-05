@@ -35,23 +35,6 @@
       <scope>provided</scope>
     </dependency>
     <dependency>
-      <!-- Optional model renderer. Soft dep, reached through BetterModelBridge: a
-           car type with a `bettermodel` name draws via BetterModel, otherwise (and
-           whenever BetterModel is absent) Cars uses its own ItemDisplay body. -->
-      <groupId>kr.toxicity.model</groupId>
-      <artifactId>bettermodel</artifactId>
-      <version>3.4.1</version>
-      <scope>provided</scope>
-      <!-- Only the API classes are needed at compile time; BetterModel supplies its own runtime deps on
-           the server, so skip its transitive tree (unavailable in an offline build anyway). -->
-      <exclusions>
-        <exclusion>
-          <groupId>*</groupId>
-          <artifactId>*</artifactId>
-        </exclusion>
-      </exclusions>
-    </dependency>
-    <dependency>
       <groupId>io.papermc.paper</groupId>
       <artifactId>paper-api</artifactId>
       <version>1.21.4-R0.1-SNAPSHOT</version>
