@@ -25,14 +25,14 @@ public final class CarRegistry {
         if (!file.isFile()) {
             CarType jeep = new CarType("jeep");
             jeep.name = "Facility Jeep";
-            jeep.tag = "jeep";
+            jeep.model = "jeep";
             jeep.seatOffsets = new java.util.ArrayList<>(java.util.List.of(
                 new double[]{0.35, 1.0, 0.3}, new double[]{-0.35, 1.0, 0.3},
                 new double[]{0.35, 1.0, -0.6}, new double[]{-0.35, 1.0, -0.6}));
             types.put(jeep.id, jeep);
             CarType forklift = new CarType("forklift");   // built-in cargo hauler that auto-loads barrels
             forklift.name = "Forklift";
-            forklift.tag = "forklift";
+            forklift.model = "forklift";
             forklift.maxSpeed = 5.0;
             forklift.cargoRows = 3;      // a small-items hold too
             forklift.forklift = true;    // drives up to a barrel and reels it aboard on its own

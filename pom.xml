@@ -6,7 +6,7 @@
 
   <groupId>fi.alavesa</groupId>
   <artifactId>cars-plugin</artifactId>
-  <version>0.13.0</version>
+  <version>0.15.0</version>
   <packaging>jar</packaging>
 
   <name>Cars</name>
@@ -33,6 +33,24 @@
       <artifactId>labra-plugin</artifactId>
       <version>0.19.0</version>
       <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <!-- Model renderer. Soft dep, reached only through BetterModelBridge: a car type names a
+           BetterModel model and each spawned car gets its OWN model instance rendered on its base
+           entity, which BetterModel auto-follows. When BetterModel is absent the car simply spawns
+           with no visible body (physics/hitbox/seats still work). -->
+      <groupId>kr.toxicity.model</groupId>
+      <artifactId>bettermodel</artifactId>
+      <version>3.4.1</version>
+      <scope>provided</scope>
+      <!-- Only the API classes are needed at compile time; BetterModel supplies its own runtime deps on
+           the server, so skip its transitive tree (unavailable in an offline build anyway). -->
+      <exclusions>
+        <exclusion>
+          <groupId>*</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>io.papermc.paper</groupId>

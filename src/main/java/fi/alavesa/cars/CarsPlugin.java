@@ -2,11 +2,9 @@ package fi.alavesa.cars;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
-import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
-import org.bukkit.World;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -24,7 +22,6 @@ import org.joml.Vector3f;
 
 import java.util.List;
 import java.util.Locale;
-import java.util.UUID;
 import java.util.stream.Stream;
 
 public final class CarsPlugin extends JavaPlugin {
@@ -42,11 +39,13 @@ public final class CarsPlugin extends JavaPlugin {
     private NamespacedKey attackKey;    // last-seen attack timestamp, on the Interaction hitbox
     private NamespacedKey winchCountKey;// how many barrels have been winched onto a car, on the base Pig
     private NamespacedKey boxShadyKey;  // a cargo box's shady-barrel origin key, on the BlockDisplay box
-    private NamespacedKey modelKey;     // UUID of the external tagged model entity this car follows, on the base Pig
     private WinchManager winch;
 
-    /** How close (blocks) an externally-spawned tagged entity has to be for a car to claim it as its model. */
-    public static final double MODEL_CLAIM_RADIUS = 6.0;
+    /** Live BetterModel tracker handles, keyed by base-Pig UUID, so a car's rendered model can be detached on
+     *  wreck/removal. In-memory only: after a restart BetterModel re-creates its own trackers from its store,
+     *  and {@link BetterModelBridge#remove} falls back to the entity's tracker registry when no handle is kept
+     *  here. The value type is Object so this class never links a BetterModel type in a field. */
+    private final java.util.Map<java.util.UUID, Object> betterModelTrackers = new java.util.HashMap<>();
 
     @Override
     public void onEnable() {
@@ -59,12 +58,7 @@ public final class CarsPlugin extends JavaPlugin {
         attackKey = new NamespacedKey(this, "last_attack");
         winchCountKey = new NamespacedKey(this, "winch_count");
         boxShadyKey = new NamespacedKey(this, "box_shady");
-        modelKey = new NamespacedKey(this, "model_entity");
         getConfig().addDefault("seat-y-adjust", -0.72);
-        // When a car is removed/scrapped, the external model entity it was following is, by default, LEFT
-        // in place (the op owns it - they brought it in from BetterModel/ModelEngine/an armour stand).
-        // Set true to also delete the model when the car is scrapped with /car remove.
-        getConfig().addDefault("delete-model-on-remove", false);
         getConfig().addDefault("monorail.speed", 0.3);
         getConfig().addDefault("monorail.arrive", 0.7);
         getConfig().addDefault("monorail.dwell-ticks", 40);
@@ -98,7 +92,6 @@ public final class CarsPlugin extends JavaPlugin {
     public NamespacedKey cargoKey() { return cargoKey; }
     public NamespacedKey wreckedKey() { return wreckedKey; }
     public NamespacedKey attackKey() { return attackKey; }
-    public NamespacedKey modelKey() { return modelKey; }
 
     // ------------------------------------------------------------- spawning
 
@@ -130,9 +123,9 @@ public final class CarsPlugin extends JavaPlugin {
         // never reverts to wandering farm animal.
         base.setAware(false);
         org.bukkit.Bukkit.getMobGoals().removeAllGoals(base);
-        // NO plugin-owned body model any more: the visible car is an external entity carrying this type's
-        // scoreboard TAG (BetterModel/ModelEngine/armour stand/item display - anything with the tag). The car
-        // CLAIMS the nearest such entity below and DriveTask teleports it onto the car each tick.
+        // The visible body is a BetterModel model rendered on the base Pig (attached further below): each car
+        // gets its OWN model instance, which BetterModel auto-follows (position + body yaw). The click hitbox
+        // and seats come from config/commands, not a model file.
         Interaction hitbox = location.getWorld().spawn(location.clone().add(0, type.hitboxOffsetY, 0), Interaction.class, i -> {
             i.setInteractionWidth((float) type.hitboxWidth);
             i.setInteractionHeight((float) type.hitboxHeight);
@@ -156,58 +149,23 @@ public final class CarsPlugin extends JavaPlugin {
                 });
             base.addPassenger(winchBox);
         }
-        // Grab a tagged model if one is already standing by; if not, DriveTask keeps re-trying each tick, so
-        // the op can spawn the model right after the car.
-        tryClaimModel(base, type);
+        // Render this car's OWN BetterModel model instance on the base Pig. BetterModel auto-follows the
+        // base's position and body yaw (DriveTask sets the yaw each tick), so no per-tick teleport is needed.
+        // When BetterModel is absent or the type names no model, the car simply drives with no visible body.
+        if (BetterModelBridge.available() && type.model != null && !type.model.isEmpty()) {
+            Object tracker = BetterModelBridge.apply(base, type.model);
+            if (tracker != null) betterModelTrackers.put(base.getUniqueId(), tracker);
+        }
     }
 
     public static final String TAG_WINCHBOX = "cars.winchbox";
 
-    // ------------------------------------------------------- external model follow
+    // ------------------------------------------------------- BetterModel body
 
-    /** The external entity this car currently follows, or null if none claimed / it has gone away. */
-    public Entity claimedModel(Pig base) {
-        String id = base.getPersistentDataContainer().get(modelKey, PersistentDataType.STRING);
-        if (id == null) return null;
-        try { return Bukkit.getEntity(UUID.fromString(id)); } catch (IllegalArgumentException e) { return null; }
-    }
-
-    /** Stop following whatever model this car had claimed (the model entity itself is left untouched). */
-    public void releaseModel(Pig base) {
-        base.getPersistentDataContainer().remove(modelKey);
-    }
-
-    /** All model-entity UUIDs already claimed by a car in this world, so two cars never fight over one. */
-    private java.util.Set<UUID> claimedModels(World world) {
-        java.util.Set<UUID> claimed = new java.util.HashSet<>();
-        for (Pig pig : world.getEntitiesByClass(Pig.class)) {
-            if (!pig.getScoreboardTags().contains(DriveTask.TAG_CAR)) continue;
-            String id = pig.getPersistentDataContainer().get(modelKey, PersistentDataType.STRING);
-            if (id != null) try { claimed.add(UUID.fromString(id)); } catch (IllegalArgumentException ignored) { }
-        }
-        return claimed;
-    }
-
-    /** Claim the nearest unclaimed entity carrying this type's tag within {@link #MODEL_CLAIM_RADIUS}, storing
-     *  its UUID on the base Pig. Returns the claimed entity, or null if none is available yet (the car will
-     *  re-try next tick). Our own car parts are never claimed even if they happened to share the tag. */
-    public Entity tryClaimModel(Pig base, CarType type) {
-        if (type.tag == null || type.tag.isEmpty()) return null;
-        Location at = base.getLocation();
-        java.util.Set<UUID> taken = claimedModels(at.getWorld());
-        Entity best = null; double bestSq = MODEL_CLAIM_RADIUS * MODEL_CLAIM_RADIUS;
-        for (Entity e : at.getWorld().getNearbyEntities(at, MODEL_CLAIM_RADIUS, MODEL_CLAIM_RADIUS, MODEL_CLAIM_RADIUS)) {
-            if (e.equals(base) || !e.getScoreboardTags().contains(type.tag)) continue;
-            var tags = e.getScoreboardTags();
-            if (tags.contains(DriveTask.TAG_CAR) || tags.contains(DriveTask.TAG_PART)
-                || tags.contains(DriveTask.TAG_SEAT)) continue;   // never claim our own parts
-            if (taken.contains(e.getUniqueId())) continue;
-            double d = e.getLocation().distanceSquared(at);
-            if (d < bestSq) { bestSq = d; best = e; }
-        }
-        if (best != null) base.getPersistentDataContainer().set(modelKey, PersistentDataType.STRING,
-            best.getUniqueId().toString());
-        return best;
+    /** Detach and forget a car's rendered BetterModel model, if it has one. Safe to call for any base. */
+    private void detachModel(Pig base) {
+        Object tracker = betterModelTrackers.remove(base.getUniqueId());
+        if (BetterModelBridge.available()) BetterModelBridge.remove(tracker, base);
     }
 
     /** Spawn one visible cargo box (a plain barrel block display) per configured position, riding the car. */
@@ -301,8 +259,7 @@ public final class CarsPlugin extends JavaPlugin {
         return false;
     }
 
-    /** Turn a car into an inert wreck: undrivable, no seats. The external model is RELEASED (left where it
-     *  last followed to, like a crashed body) - it is the op's entity, so Cars never deletes it on a wreck. */
+    /** Turn a car into an inert wreck: undrivable, no seats. The rendered BetterModel body is detached. */
     public void wreckCar(Pig base) {
         if (isWrecked(base)) return;
         base.getPersistentDataContainer().set(wreckedKey, PersistentDataType.INTEGER, 1);
@@ -316,8 +273,8 @@ public final class CarsPlugin extends JavaPlugin {
         // drop the cargo hold on the ground so it isn't lost inside an unusable wreck, and remove the boxes
         dropCargo(base);
         clearCargoBoxes(base);
-        // stop following the external model (its last position becomes the "wreck" where it sits)
-        releaseModel(base);
+        // detach the rendered BetterModel body (there is no separate wreck model)
+        detachModel(base);
         base.getWorld().playSound(base.getLocation(), org.bukkit.Sound.ENTITY_GENERIC_EXPLODE, 1.0f, 0.8f);
         base.getWorld().spawnParticle(org.bukkit.Particle.LARGE_SMOKE, base.getLocation().add(0, 1, 0), 30, 0.8, 0.6, 0.8, 0.05);
     }
@@ -415,14 +372,14 @@ public final class CarsPlugin extends JavaPlugin {
         switch (args[0].toLowerCase(Locale.ROOT)) {
             case "create" -> {
                 if (args.length < 3) return error(sender,
-                    "/car create <id> <tag>   (tag = the scoreboard tag your model entity carries)");
+                    "/car create <id> <model>   (model = the BetterModel model name you authored)");
                 String id = args[1].toLowerCase(Locale.ROOT);
                 if (registry.get(id) != null) return error(sender, "'" + id + "' already exists.");
                 CarType type = registry.create(id);
-                type.tag = args[2];
+                type.model = args[2];
                 registry.save();
-                sender.sendMessage(Component.text("Created vehicle type '" + id + "' following model tag '"
-                    + type.tag + "'. Spawn a tagged model near a spawned car, or tune with /car edit " + id + " ...",
+                sender.sendMessage(Component.text("Created vehicle type '" + id + "' rendering BetterModel model '"
+                    + type.model + "'. Spawn it with /car spawn " + id + ", or tune with /car edit " + id + " ...",
                     NamedTextColor.AQUA));
                 return true;
             }
@@ -477,7 +434,7 @@ public final class CarsPlugin extends JavaPlugin {
                 try {
                     switch (args[2].toLowerCase(Locale.ROOT)) {
                         case "name" -> type.name = value;
-                        case "tag" -> type.tag = value;
+                        case "model" -> type.model = value.equalsIgnoreCase("none") ? "" : value;
                         case "max-speed" -> type.maxSpeed = Double.parseDouble(value);
                         case "acceleration" -> type.acceleration = Double.parseDouble(value);
                         case "turn-rate" -> type.turnRate = Double.parseDouble(value);
@@ -494,7 +451,7 @@ public final class CarsPlugin extends JavaPlugin {
                         case "drift" -> type.drift = value.equalsIgnoreCase("true") || value.equals("1");
                         case "forklift" -> type.forklift = value.equalsIgnoreCase("true") || value.equals("1");
                         default -> { return error(sender,
-                            "Properties: name, tag, max-speed, acceleration, turn-rate, sound, seat-y-adjust, cargo-rows, max-health, cargo-box <i> <x> <y> <z>, cargo-box-scale, cargo-box-clear, hitbox-width, hitbox-height, hitbox-offset-y, winch, winch-spot <x> <y> <z>, drift, forklift  (seats: /car seat <id> ...)"); }
+                            "Properties: name, model, max-speed, acceleration, turn-rate, sound, seat-y-adjust, cargo-rows, max-health, cargo-box <i> <x> <y> <z>, cargo-box-scale, cargo-box-clear, hitbox-width, hitbox-height, hitbox-offset-y, winch, winch-spot <x> <y> <z>, drift, forklift  (seats: /car seat <id> ...)"); }
                     }
                 } catch (NumberFormatException e) {
                     return error(sender, "That property takes a number.");
@@ -506,12 +463,13 @@ public final class CarsPlugin extends JavaPlugin {
             }
             case "list" -> {
                 for (CarType type : registry.all().values()) {
+                    String model = type.model == null || type.model.isEmpty() ? "none" : type.model;
                     sender.sendMessage(Component.text(type.id + " - \"" + type.name + "\", "
-                        + type.seatOffsets.size() + " seat(s), " + type.maxSpeed + " b/s, tag '" + type.tag + "'",
+                        + type.seatOffsets.size() + " seat(s), " + type.maxSpeed + " b/s, model '" + model + "'",
                         NamedTextColor.AQUA));
                 }
                 if (registry.all().isEmpty()) sender.sendMessage(
-                    Component.text("No vehicle types. /car create <id> <tag>", NamedTextColor.GRAY));
+                    Component.text("No vehicle types. /car create <id> <model>", NamedTextColor.GRAY));
                 return true;
             }
             case "spawn" -> {
@@ -520,9 +478,9 @@ public final class CarsPlugin extends JavaPlugin {
                 CarType type = registry.get(args[1]);
                 if (type == null) return error(sender, "No vehicle type '" + args[1] + "'.");
                 spawnCar(type, player.getLocation());
-                sender.sendMessage(Component.text(type.name + " delivered (following tag '" + type.tag
-                    + "'). Spawn a tagged model within " + (int) MODEL_CLAIM_RADIUS
-                    + " blocks if one isn't already there. Right-click to get in.", NamedTextColor.AQUA));
+                String model = type.model == null || type.model.isEmpty() ? "none" : type.model;
+                sender.sendMessage(Component.text(type.name + " delivered (model '" + model
+                    + "'). Right-click to get in.", NamedTextColor.AQUA));
                 return true;
             }
             case "winch" -> {
@@ -538,18 +496,13 @@ public final class CarsPlugin extends JavaPlugin {
             }
             case "remove" -> {
                 if (!(sender instanceof Player player)) return error(sender, "Players only.");
-                boolean deleteModel = getConfig().getBoolean("delete-model-on-remove", false);
                 int removed = 0;
                 for (Entity entity : player.getLocation().getNearbyEntities(16, 16, 16)) {
                     var tags = entity.getScoreboardTags();
                     if (tags.contains(DriveTask.TAG_CAR) || tags.contains(DriveTask.TAG_PART)
                         || tags.contains(DriveTask.TAG_SEAT)) {
-                        // the external model is the op's entity: left in place by default, deleted only when
-                        // delete-model-on-remove is on.
-                        if (entity instanceof Pig pig) {
-                            Entity model = claimedModel(pig);
-                            if (model != null && deleteModel) model.remove();
-                        }
+                        // detach this car's rendered BetterModel body before the base entity goes away
+                        if (entity instanceof Pig pig) detachModel(pig);
                         entity.getPassengers().forEach(p -> { if (!(p instanceof Player)) p.remove(); });
                         if (entity instanceof Pig || !(entity.getVehicle() instanceof Pig)) {
                             entity.remove();
@@ -557,8 +510,8 @@ public final class CarsPlugin extends JavaPlugin {
                         removed++;
                     }
                 }
-                sender.sendMessage(Component.text("Scrapped " + removed + " car part(s) within 16 blocks"
-                    + (deleteModel ? " (and their models)." : " (models left in place)."), NamedTextColor.AQUA));
+                sender.sendMessage(Component.text("Scrapped " + removed + " car part(s) within 16 blocks.",
+                    NamedTextColor.AQUA));
                 return true;
             }
             case "monorail", "rail" -> { return monorail(sender, args); }
@@ -680,7 +633,7 @@ public final class CarsPlugin extends JavaPlugin {
             };
             case 3 -> {
                 if (args[0].equalsIgnoreCase("edit")) {
-                    yield filter(Stream.of("name", "tag", "max-speed", "acceleration", "turn-rate",
+                    yield filter(Stream.of("name", "model", "max-speed", "acceleration", "turn-rate",
                         "sound", "seat-y-adjust", "cargo-rows", "max-health", "cargo-box", "cargo-box-scale",
                         "cargo-box-clear", "hitbox-width", "hitbox-height", "hitbox-offset-y", "winch",
                         "winch-spot", "drift", "forklift"), args[2]);
@@ -704,7 +657,7 @@ public final class CarsPlugin extends JavaPlugin {
 
     private boolean usage(CommandSender sender) {
         sender.sendMessage(Component.text(
-            "/car create <id> <tag> | edit <id> <prop> <value> | seat <id> driver|<n> <x> <y> <z> | seats <id> | list | spawn <id> | remove | monorail ...",
+            "/car create <id> <model> | edit <id> <prop> <value> | seat <id> driver|<n> <x> <y> <z> | seats <id> | list | spawn <id> | remove | monorail ...",
             NamedTextColor.AQUA));
         return true;
     }

@@ -6,18 +6,17 @@ import org.bukkit.configuration.ConfigurationSection;
  * One vehicle type, editable in-game and persisted to cars.yml - the same
  * config-driven pattern as the guns plugin.
  *
- * The car carries NO plugin-owned model any more. Instead each type names a
- * scoreboard TAG; a spawned car CLAIMS the nearest externally-spawned entity
- * carrying that tag (BetterModel, ModelEngine, an armour stand, an item
- * display - anything that is an entity with the tag) and teleports it along
- * each tick. Seats and the click hitbox come from config/commands, not a model
- * file.
+ * The visible body is a BetterModel model: each type names a BetterModel model
+ * (the .bbmodel the user authored in plugins/BetterModel/models/) and each
+ * spawned car gets its OWN model instance rendered on its base entity, which
+ * BetterModel auto-follows - position and body yaw. Seats and the click hitbox
+ * come from config/commands, not a model file.
  */
 public final class CarType {
 
     public final String id;
     public String name;
-    public String tag;          // scoreboard tag of the external model entity this car follows (e.g. "jeep")
+    public String model;        // BetterModel model name rendered on this car's base ("" = no visible body)
     public double maxSpeed;     // blocks per second
     public double acceleration; // blocks per second, gained per second of throttle
     public double turnRate;     // degrees per tick at full steering
@@ -45,7 +44,7 @@ public final class CarType {
     public CarType(String id) {
         this.id = id;
         this.name = id;
-        this.tag = id;
+        this.model = id;
         this.maxSpeed = 9.0;
         this.acceleration = 6.0;
         this.turnRate = 4.0;
@@ -63,12 +62,11 @@ public final class CarType {
     public static CarType load(String id, ConfigurationSection section) {
         CarType type = new CarType(id);
         type.name = section.getString("name", type.name);
-        // tag defaults to the old `model` value (minus a legacy "car_" prefix) for back-compat with
-        // configs written before the tag-follow rework, else the id.
-        String legacyModel = section.getString("model", null);
-        String defaultTag = type.id;
-        if (legacyModel != null) defaultTag = legacyModel.replaceFirst("(?i)^car_", "");
-        type.tag = section.getString("tag", defaultTag);
+        // The BetterModel model name is stored under `model`. Back-compat: an older tag-follow config kept
+        // the follow target under `tag`, so fall back to that; else keep the constructor default (the id).
+        String saved = section.getString("model", null);
+        if (saved == null) saved = section.getString("tag", null);
+        if (saved != null) type.model = saved;
         type.maxSpeed = section.getDouble("max-speed", type.maxSpeed);
         type.acceleration = section.getDouble("acceleration", type.acceleration);
         type.turnRate = section.getDouble("turn-rate", type.turnRate);
@@ -115,7 +113,7 @@ public final class CarType {
 
     public void save(ConfigurationSection section) {
         section.set("name", name);
-        section.set("tag", tag);
+        section.set("model", model);
         section.set("max-speed", maxSpeed);
         section.set("acceleration", acceleration);
         section.set("turn-rate", turnRate);

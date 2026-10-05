@@ -26,10 +26,11 @@ import java.util.UUID;
  * The engine. Every tick, each car (an invisible pig carrying a mount hitbox
  * and the driver) reads its driver's live WASD input (PlayerInputEvent) and
  * turns it into velocity: W throttles, S brakes then reverses, A/D steer -
- * sharper at speed, reversed in reverse, like a car. The visible body is an
- * external entity carrying the type's scoreboard tag, claimed and teleported
- * onto the car each tick (see {@link #followModel}). Seats are free-standing
- * invisible armor stands teleported along, keeping their riders aboard.
+ * sharper at speed, reversed in reverse, like a car. The visible body is this
+ * car's own BetterModel model instance, rendered on the base Pig and
+ * auto-followed by BetterModel (position + the body yaw we set each tick), so
+ * nothing is teleported for it. Seats are free-standing invisible armor stands
+ * teleported along, keeping their riders aboard.
  */
 public final class DriveTask implements Runnable {
 
@@ -260,10 +261,8 @@ public final class DriveTask implements Runnable {
         base.setRotation(yaw, 0);
         yaws.put(base.getUniqueId(), yaw);
 
-        // the visible body is now an external, tag-claimed entity (BetterModel/ModelEngine/armour stand/item
-        // display) - drag it onto the car each tick, facing the car's yaw. Claims one lazily if the op spawns
-        // the model after the car.
-        followModel(base, type, yaw);
+        // The visible body is this car's BetterModel model, attached to the base in CarsPlugin.spawnCar and
+        // auto-followed by BetterModel from the base's position + the body yaw set just above - no teleport here.
 
         if (Math.abs(speed) > 0.4 && tick % 6 == 0) {
             float pitch = (float) (0.6 + Math.abs(speed) / type.maxSpeed);
@@ -304,23 +303,6 @@ public final class DriveTask implements Runnable {
     private static float wrapDegrees(double degrees) {
         double d = ((degrees + 180) % 360 + 360) % 360 - 180;
         return (float) d;
-    }
-
-    /** Teleport this car's claimed external model entity onto the base each tick, facing the car's yaw (pitch
-     *  flat). If the claim is gone - the entity was killed/removed - release it and try to claim another
-     *  tagged entity standing by; if none is in range yet, the car simply drives on invisibly until one is. */
-    private void followModel(Pig base, CarType type, float yaw) {
-        Entity model = plugin.claimedModel(base);
-        if (model == null || model.isDead() || !model.isValid()) {
-            if (model != null) plugin.releaseModel(base);   // stale claim: the entity is gone
-            model = plugin.tryClaimModel(base, type);
-            if (model == null) return;                       // nothing to follow yet - retry next tick
-        }
-        Location target = base.getLocation().clone();
-        target.setYaw(yaw);
-        target.setPitch(0);
-        // cross-world safe: teleport brings the model to the car's world if a portal split them apart
-        model.teleport(target);
     }
 
     /** "⏲ 14.2 blocks/s" on the driver's actionbar, green->yellow->red as it
