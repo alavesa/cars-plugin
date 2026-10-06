@@ -34,10 +34,18 @@ final class BetterModelBridge {
     static Object apply(Entity entity, String modelName) {
         try {
             ModelRenderer renderer = BetterModel.modelOrNull(modelName);
-            if (renderer == null) return null;
+            if (renderer == null) {
+                Bukkit.getLogger().warning("[Cars] BetterModel model '" + modelName + "' NOT FOUND. Put '"
+                    + modelName + ".bbmodel' in plugins/BetterModel/models/ and run /bettermodel reload; the "
+                    + "car's model name (/car edit <id> model <name>) must match the .bbmodel file name exactly.");
+                return null;
+            }
             PlatformEntity platformEntity = BukkitAdapter.adapt(entity);
-            return renderer.create(platformEntity);
+            EntityTracker tracker = renderer.create(platformEntity);
+            Bukkit.getLogger().info("[Cars] attached BetterModel '" + modelName + "' to a car.");
+            return tracker;
         } catch (Throwable t) {
+            Bukkit.getLogger().warning("[Cars] BetterModel attach failed for '" + modelName + "': " + t);
             return null;
         }
     }
